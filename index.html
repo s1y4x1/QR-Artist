@@ -76,6 +76,24 @@
                 </select>
             </div>
 
+            <div class="control-group hz-layout">
+                <label for="module-scale-range">模块缩放:</label>
+                <div class="range-value-control">
+                    <input type="range" id="module-scale-range" min="0" max="100" value="100" step="1">
+                    <input type="number" class="range-number-input" id="module-scale-value" min="0" max="100" value="100" step="1" aria-label="模块缩放值">
+                    <span class="range-unit">%</span>
+                </div>
+            </div>
+
+            <div class="control-group hz-layout" id="covered-module-scale-group" hidden>
+                <label for="covered-module-scale-range">被图片覆盖的模块缩放:</label>
+                <div class="range-value-control">
+                    <input type="range" id="covered-module-scale-range" min="0" max="100" value="50" step="1">
+                    <input type="number" class="range-number-input" id="covered-module-scale-value" min="0" max="100" value="50" step="1" aria-label="被图片覆盖的模块缩放值">
+                    <span class="range-unit">%</span>
+                </div>
+            </div>
+
             <div class="control-group compact-dropdown-row">
                 <label>寻像图形:</label>
                 <details class="option-dropdown">
@@ -136,17 +154,61 @@
 
             <div class="control-group hz-layout">
                 <label>前景色:</label>
-                <div class="color-control">
-                    <input type="color" id="fg-color" value="#000000">
-                    <input type="text" id="fg-color-hex" value="000000" maxlength="6" placeholder="000000">
+                <div class="color-control-stack">
+                    <div class="color-control">
+                        <input type="color" id="fg-color" value="#000000">
+                        <input type="text" id="fg-color-hex" value="000000" maxlength="6" placeholder="000000">
+                    </div>
+                    <div class="color-image-options" id="fg-image-options" hidden>
+                        <label class="transparency-control">
+                            <span>透明度</span>
+                            <input type="range" id="fg-transparency-range" min="0" max="100" value="0" step="1">
+                            <input type="number" class="range-number-input" id="fg-transparency-value" min="0" max="100" value="0" step="1" aria-label="前景色透明度值">
+                            <span class="range-unit">%</span>
+                        </label>
+                        <label class="inline-check">
+                            <input type="checkbox" id="fg-auto-luminance" checked>
+                            自动设置以适合明度
+                        </label>
+                    </div>
                 </div>
             </div>
 
             <div class="control-group hz-layout">
                 <label>背景色:</label>
-                <div class="color-control">
-                    <input type="color" id="bg-color" value="#ffffff">
-                    <input type="text" id="bg-color-hex" value="ffffff" maxlength="6" placeholder="ffffff">
+                <div class="color-control-stack">
+                    <div class="color-control">
+                        <input type="color" id="bg-color" value="#ffffff">
+                        <input type="text" id="bg-color-hex" value="ffffff" maxlength="6" placeholder="ffffff">
+                    </div>
+                    <div class="color-image-options" id="bg-image-options" hidden>
+                        <label class="transparency-control">
+                            <span>透明度</span>
+                            <input type="range" id="bg-transparency-range" min="0" max="100" value="0" step="1">
+                            <input type="number" class="range-number-input" id="bg-transparency-value" min="0" max="100" value="0" step="1" aria-label="背景色透明度值">
+                            <span class="range-unit">%</span>
+                        </label>
+                        <label class="inline-check">
+                            <input type="checkbox" id="bg-auto-luminance" checked>
+                            自动设置以适合明度
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-group luminance-thresholds" id="auto-luminance-thresholds" hidden>
+                <label>自动明度阈值:</label>
+                <div class="threshold-control-row">
+                    <span>暗色上限</span>
+                    <input type="range" id="dark-luminance-range" min="0" max="100" value="30" step="1">
+                    <input type="number" class="range-number-input" id="dark-luminance-value" min="0" max="100" value="30" step="1" aria-label="暗色明度上限值">
+                    <span class="range-unit">%</span>
+                </div>
+                <div class="threshold-control-row">
+                    <span>亮色下限</span>
+                    <input type="range" id="light-luminance-range" min="0" max="100" value="70" step="1">
+                    <input type="number" class="range-number-input" id="light-luminance-value" min="0" max="100" value="70" step="1" aria-label="亮色明度下限值">
+                    <span class="range-unit">%</span>
                 </div>
             </div>
 

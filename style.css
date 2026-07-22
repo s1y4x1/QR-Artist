@@ -88,6 +88,125 @@ h1 {
     gap: 8px;
 }
 
+.color-control-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 7px;
+    min-width: 184px;
+}
+
+.range-value-control,
+.transparency-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.range-value-control {
+    flex: 1;
+    min-width: 0;
+}
+
+#covered-module-scale-group[hidden] {
+    display: none;
+}
+
+#covered-module-scale-group {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+#covered-module-scale-group > label {
+    font-size: 12px;
+    margin-right: 0;
+}
+
+.range-value-control input[type="range"] {
+    flex: 1;
+    min-width: 100px;
+}
+
+.range-number-input {
+    width: 46px;
+    min-width: 46px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: #555;
+    box-sizing: border-box;
+    padding: 4px;
+}
+
+.range-unit {
+    margin-left: -5px;
+    color: #555;
+}
+
+.color-image-options {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+    width: 100%;
+}
+
+.color-image-options[hidden] {
+    display: none;
+}
+
+.transparency-control {
+    width: 100%;
+    font-size: 12px;
+    color: #555;
+}
+
+.transparency-control input[type="range"] {
+    flex: 1;
+    min-width: 70px;
+}
+
+.transparency-control input[type="range"]:disabled {
+    opacity: 0.45;
+}
+
+.range-number-input:disabled {
+    opacity: 0.45;
+}
+
+.luminance-thresholds {
+    padding: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fafafa;
+}
+
+.luminance-thresholds[hidden] {
+    display: none;
+}
+
+.luminance-thresholds > label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #374151;
+}
+
+.threshold-control-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #555;
+}
+
+.threshold-control-row > span:first-child {
+    min-width: 48px;
+}
+
+.threshold-control-row input[type="range"] {
+    flex: 1;
+    min-width: 0;
+}
+
 .color-control input[type="color"] {
     width: 36px;
     height: 32px;

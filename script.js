@@ -5,6 +5,8 @@ let version = parseInt(document.getElementById('version-range').value) || 0;
 let maskPattern = -1; // -1 for auto
 let encodingMode = document.getElementById('encoding-mode').value;
 const BINARIZE_THRESHOLD = 128;
+const DEFAULT_DARK_LUMINANCE_LIMIT = 30;
+const DEFAULT_LIGHT_LUMINANCE_LIMIT = 70;
 let appendHash = false;
 let bestAutoMask = 0;
 let lastManualMask = 0;
@@ -12,6 +14,10 @@ let lastManualMask = 0;
 // Color State
 let foregroundColor = '#000000';
 let backgroundColor = '#ffffff';
+let foregroundTransparency = 0;
+let backgroundTransparency = 0;
+let darkLuminanceLimit = DEFAULT_DARK_LUMINANCE_LIMIT;
+let lightLuminanceLimit = DEFAULT_LIGHT_LUMINANCE_LIMIT;
 
 // Upload Info
 let uploadInfo = {
@@ -812,6 +818,14 @@ function getAnimatedArtCacheKey() {
         cell: CELL_SIZE,
         fg: foregroundColor,
         bg: backgroundColor,
+        fgTransparency: foregroundTransparency,
+        bgTransparency: backgroundTransparency,
+        fgAutoLuminance: !!(fgAutoLuminanceCb && fgAutoLuminanceCb.checked),
+        bgAutoLuminance: !!(bgAutoLuminanceCb && bgAutoLuminanceCb.checked),
+        moduleScale: moduleScalePercent,
+        coveredModuleScale: coveredModuleScalePercent,
+        darkLuminanceLimit,
+        lightLuminanceLimit,
         art: !!(artisticModeCb && artisticModeCb.checked),
         covered: !!(allowCoveredFreedomCb && allowCoveredFreedomCb.checked),
         emphasizeFunc: !!(emphasizeFuncCb ? emphasizeFuncCb.checked : true),
@@ -1178,6 +1192,24 @@ const fgColorInput = document.getElementById('fg-color');
 const bgColorInput = document.getElementById('bg-color');
 const fgColorHexInput = document.getElementById('fg-color-hex');
 const bgColorHexInput = document.getElementById('bg-color-hex');
+const fgImageOptions = document.getElementById('fg-image-options');
+const bgImageOptions = document.getElementById('bg-image-options');
+const fgTransparencyRange = document.getElementById('fg-transparency-range');
+const bgTransparencyRange = document.getElementById('bg-transparency-range');
+const fgTransparencyValue = document.getElementById('fg-transparency-value');
+const bgTransparencyValue = document.getElementById('bg-transparency-value');
+const fgAutoLuminanceCb = document.getElementById('fg-auto-luminance');
+const bgAutoLuminanceCb = document.getElementById('bg-auto-luminance');
+const moduleScaleRange = document.getElementById('module-scale-range');
+const moduleScaleValue = document.getElementById('module-scale-value');
+const coveredModuleScaleGroup = document.getElementById('covered-module-scale-group');
+const coveredModuleScaleRange = document.getElementById('covered-module-scale-range');
+const coveredModuleScaleValue = document.getElementById('covered-module-scale-value');
+const autoLuminanceThresholds = document.getElementById('auto-luminance-thresholds');
+const darkLuminanceRange = document.getElementById('dark-luminance-range');
+const darkLuminanceValue = document.getElementById('dark-luminance-value');
+const lightLuminanceRange = document.getElementById('light-luminance-range');
+const lightLuminanceValue = document.getElementById('light-luminance-value');
 const cellSizeAutoBtn = document.getElementById('cell-size-auto-btn');
 const embedImageCb = document.getElementById('embed-image-cb');
 const dynamicPreviewCb = document.getElementById('dynamic-preview-cb');
@@ -1211,6 +1243,8 @@ const imageSizeResetBtn = document.getElementById('img-size-reset-btn');
 let CELL_SIZE = 8;
 let qrMargin = 1;
 let moduleStyle = 'square';
+let moduleScalePercent = 100;
+let coveredModuleScalePercent = 50;
 let finderStyle = 'classic';
 let alignStyle = 'classic';
 let lastNonBasisImportRect = null;
@@ -1579,6 +1613,30 @@ function drawLiquidConnectedModule(drawCtx, x, y, w, h, color, neighbors, carveC
     }
 }
 
+function drawScaledLiquidConnectedModule(drawCtx, cellX, cellY, cellW, cellH, rect, color, neighbors) {
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const rectRight = rect.x + rect.width;
+    const rectBottom = rect.y + rect.height;
+    const cellRight = cellX + cellW;
+    const cellBottom = cellY + cellH;
+
+    drawCtx.fillStyle = color;
+    if (neighbors.up && rect.y > cellY) {
+        drawCtx.fillRect(rect.x, cellY, rect.width, rect.y - cellY);
+    }
+    if (neighbors.right && rectRight < cellRight) {
+        drawCtx.fillRect(rectRight, rect.y, cellRight - rectRight, rect.height);
+    }
+    if (neighbors.down && rectBottom < cellBottom) {
+        drawCtx.fillRect(rect.x, rectBottom, rect.width, cellBottom - rectBottom);
+    }
+    if (neighbors.left && rect.x > cellX) {
+        drawCtx.fillRect(cellX, rect.y, rect.x - cellX, rect.height);
+    }
+
+    drawLiquidConnectedModule(drawCtx, rect.x, rect.y, rect.width, rect.height, color, neighbors);
+}
+
 function drawStyledModuleOn(drawCtx, x, y, w, h, style, color) {
     const size = Math.min(w, h);
     const ox = x + (w - size) / 2;
@@ -1911,6 +1969,75 @@ function init() {
     if (embedImageCb) {
         embedImageCb.disabled = true;
     }
+
+    setImageColorOptionsVisible(false);
+    setModuleScalePercent(100, false);
+    setCoveredModuleScalePercent(50, false);
+    setDarkLuminanceLimit(DEFAULT_DARK_LUMINANCE_LIMIT, false);
+    setLightLuminanceLimit(DEFAULT_LIGHT_LUMINANCE_LIMIT, false);
+
+    const bindScaleControl = (range, numberInput, setter) => {
+        if (range) {
+            range.addEventListener('input', () => {
+                setter(range.value, false);
+                invalidateAnimatedArtCache();
+                renderQR(false);
+            });
+        }
+        if (numberInput) {
+            numberInput.addEventListener('input', () => {
+                if (numberInput.value === '') return;
+                setter(numberInput.value, false);
+                invalidateAnimatedArtCache();
+                renderQR(false);
+            });
+            numberInput.addEventListener('change', () => {
+                setter(numberInput.value === '' ? range.value : numberInput.value, false);
+                invalidateAnimatedArtCache();
+                renderQR(false);
+            });
+        }
+    };
+    bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
+    bindScaleControl(coveredModuleScaleRange, coveredModuleScaleValue, setCoveredModuleScalePercent);
+    bindScaleControl(darkLuminanceRange, darkLuminanceValue, setDarkLuminanceLimit);
+    bindScaleControl(lightLuminanceRange, lightLuminanceValue, setLightLuminanceLimit);
+
+    const bindTransparencyControl = (range, numberInput, autoCb, isForeground) => {
+        const setTransparency = (value) => {
+            const next = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
+            if (isForeground) foregroundTransparency = next;
+            else backgroundTransparency = next;
+            if (range) range.value = String(next);
+            if (numberInput) numberInput.value = String(next);
+            invalidateAnimatedArtCache();
+            renderQR(false);
+        };
+        if (range) {
+            range.addEventListener('input', () => {
+                setTransparency(range.value);
+            });
+        }
+        if (numberInput) {
+            numberInput.addEventListener('input', () => {
+                if (numberInput.value === '') return;
+                setTransparency(numberInput.value);
+            });
+            numberInput.addEventListener('change', () => {
+                setTransparency(numberInput.value === '' ? range.value : numberInput.value);
+            });
+        }
+        if (autoCb) {
+            autoCb.addEventListener('change', () => {
+                syncTransparencyControlState(range, numberInput, autoCb);
+                invalidateAnimatedArtCache();
+                renderQR(false);
+            });
+        }
+        syncTransparencyControlState(range, numberInput, autoCb);
+    };
+    bindTransparencyControl(fgTransparencyRange, fgTransparencyValue, fgAutoLuminanceCb, true);
+    bindTransparencyControl(bgTransparencyRange, bgTransparencyValue, bgAutoLuminanceCb, false);
 
     if (emphasizeFuncCb) {
         resetEmphasizeOptionsToDefault(false);
@@ -2589,6 +2716,122 @@ function parseHexColor(hex) {
 function rgbaFromHex(hex, alpha) {
     const { r, g, b } = parseHexColor(hex);
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function clamp01(value) {
+    return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function getColorLuminance(color) {
+    const { r, g, b } = typeof color === 'string' ? parseHexColor(color) : color;
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function rgbaFromRgb(color, alpha, rounding = 'nearest') {
+    const round = rounding === 'up' ? Math.ceil : (rounding === 'down' ? Math.floor : Math.round);
+    return `rgba(${round(color.r)}, ${round(color.g)}, ${round(color.b)}, ${clamp01(alpha)})`;
+}
+
+function adjustColorToLuminance(color, targetLuminance) {
+    const rgb = typeof color === 'string' ? parseHexColor(color) : color;
+    const current = getColorLuminance(rgb);
+    const target = clamp01(targetLuminance);
+    if (Math.abs(current - target) < 1e-6) return rgb;
+    if (target < current) {
+        const ratio = current > 0 ? target / current : 0;
+        return { r: rgb.r * ratio, g: rgb.g * ratio, b: rgb.b * ratio };
+    }
+    const ratio = current < 1 ? (target - current) / (1 - current) : 0;
+    return {
+        r: rgb.r + (255 - rgb.r) * ratio,
+        g: rgb.g + (255 - rgb.g) * ratio,
+        b: rgb.b + (255 - rgb.b) * ratio
+    };
+}
+
+function getAutoLuminancePaint(baseLuminance, color, requireLight) {
+    const base = clamp01(baseLuminance);
+    const colorLum = getColorLuminance(color);
+    const target = (requireLight ? lightLuminanceLimit : darkLuminanceLimit) / 100;
+    const baseAlreadyFits = requireLight ? base >= target : base <= target;
+    if (baseAlreadyFits) {
+        return { css: rgbaFromHex(color, 0), alpha: 0, shouldDraw: false, adjusted: false };
+    }
+
+    const colorCanReach = requireLight ? colorLum >= target : colorLum <= target;
+    const movesCorrectWay = requireLight ? colorLum > base : colorLum < base;
+    if (colorCanReach && movesCorrectWay) {
+        const alpha = clamp01((target - base) / (colorLum - base));
+        return {
+            css: rgbaFromHex(color, alpha),
+            alpha,
+            shouldDraw: alpha > 0,
+            adjusted: false
+        };
+    }
+
+    const adjusted = adjustColorToLuminance(color, target);
+    return {
+        css: rgbaFromRgb(adjusted, 1, requireLight ? 'up' : 'down'),
+        alpha: 1,
+        shouldDraw: true,
+        adjusted: true
+    };
+}
+
+function getCenteredModuleRect(x, y, width, height, scalePercent) {
+    const scale = Math.max(0, Math.min(100, Number(scalePercent) || 0)) / 100;
+    const scaledW = width * scale;
+    const scaledH = height * scale;
+    return {
+        x: x + (width - scaledW) / 2,
+        y: y + (height - scaledH) / 2,
+        width: scaledW,
+        height: scaledH
+    };
+}
+
+function setModuleScalePercent(value, shouldRender = true) {
+    moduleScalePercent = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
+    if (moduleScaleRange) moduleScaleRange.value = String(moduleScalePercent);
+    if (moduleScaleValue) moduleScaleValue.value = String(moduleScalePercent);
+    if (shouldRender) renderQR(false);
+}
+
+function setCoveredModuleScalePercent(value, shouldRender = true) {
+    coveredModuleScalePercent = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
+    if (coveredModuleScaleRange) coveredModuleScaleRange.value = String(coveredModuleScalePercent);
+    if (coveredModuleScaleValue) coveredModuleScaleValue.value = String(coveredModuleScalePercent);
+    if (shouldRender) renderQR(false);
+}
+
+function setDarkLuminanceLimit(value, shouldRender = true) {
+    darkLuminanceLimit = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
+    if (darkLuminanceRange) darkLuminanceRange.value = String(darkLuminanceLimit);
+    if (darkLuminanceValue) darkLuminanceValue.value = String(darkLuminanceLimit);
+    if (shouldRender) renderQR(false);
+}
+
+function setLightLuminanceLimit(value, shouldRender = true) {
+    lightLuminanceLimit = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
+    if (lightLuminanceRange) lightLuminanceRange.value = String(lightLuminanceLimit);
+    if (lightLuminanceValue) lightLuminanceValue.value = String(lightLuminanceLimit);
+    if (shouldRender) renderQR(false);
+}
+
+function syncTransparencyControlState(range, numberInput, autoCb) {
+    if (range) range.disabled = !!(autoCb && autoCb.checked);
+    if (numberInput) numberInput.disabled = !!(autoCb && autoCb.checked);
+}
+
+function setImageColorOptionsVisible(visible) {
+    [fgImageOptions, bgImageOptions].forEach((node) => {
+        if (node) node.hidden = !visible;
+    });
+    if (coveredModuleScaleGroup) coveredModuleScaleGroup.hidden = !visible;
+    if (autoLuminanceThresholds) autoLuminanceThresholds.hidden = !visible;
+    syncTransparencyControlState(fgTransparencyRange, fgTransparencyValue, fgAutoLuminanceCb);
+    syncTransparencyControlState(bgTransparencyRange, bgTransparencyValue, bgAutoLuminanceCb);
 }
 
 function normalizeHexInput(value) {
@@ -4926,9 +5169,10 @@ function renderQR(isExport, imageOverride) {
                 const alpha = offData[idx + 3];
                 if (alpha > 10) {
                     opaque += 1;
-                    const rr = offData[idx];
-                    const gg = offData[idx + 1];
-                    const bb = offData[idx + 2];
+                    const rendered = bgData ? bgData.data : offData;
+                    const rr = rendered[idx];
+                    const gg = rendered[idx + 1];
+                    const bb = rendered[idx + 2];
                     lumSum += (0.299 * rr + 0.587 * gg + 0.114 * bb) / 255.0;
                 }
             }
@@ -4937,6 +5181,25 @@ function renderQR(isExport, imageOverride) {
         const coverage = total > 0 ? (opaque / total) : 0;
         const lum = opaque > 0 ? (lumSum / opaque) : 0.5;
         return { coverage, lum, transparent: opaque === 0 };
+    };
+
+    const getModulePaint = (isDark, baseLuminance = 0.5, allowAutomatic = false) => {
+        const color = isDark ? fgColor : bgColor;
+        const autoCb = isDark ? fgAutoLuminanceCb : bgAutoLuminanceCb;
+        if (allowAutomatic && autoCb && autoCb.checked) {
+            // Use the configured dark/light limits; “切换明暗” exchanges the
+            // two requirements for the foreground and background QR colors.
+            const requireLight = isToneInverted() ? isDark : !isDark;
+            return getAutoLuminancePaint(baseLuminance, color, requireLight);
+        }
+        const transparency = isDark ? foregroundTransparency : backgroundTransparency;
+        const alpha = hasImageUpload ? clamp01(1 - transparency / 100) : 1;
+        return {
+            css: rgbaFromHex(color, Number(alpha.toFixed(4))),
+            alpha,
+            shouldDraw: alpha > 0,
+            adjusted: false
+        };
     };
 
     const isFormatInfo = (rr, cc) => {
@@ -4987,6 +5250,17 @@ function renderQR(isExport, imageOverride) {
             finalStyle[r][c] = activeStyle;
         }
     }
+
+    const getLiquidNeighbors = (r, c) => ({
+        up: r > 0 && finalDark[r - 1][c] && finalStyle[r - 1][c] === 'liquid',
+        right: c < count - 1 && finalDark[r][c + 1] && finalStyle[r][c + 1] === 'liquid',
+        down: r < count - 1 && finalDark[r + 1][c] && finalStyle[r + 1][c] === 'liquid',
+        left: c > 0 && finalDark[r][c - 1] && finalStyle[r][c - 1] === 'liquid',
+        upLeft: r > 0 && c > 0 && finalDark[r - 1][c - 1] && finalStyle[r - 1][c - 1] === 'liquid',
+        upRight: r > 0 && c < count - 1 && finalDark[r - 1][c + 1] && finalStyle[r - 1][c + 1] === 'liquid',
+        downLeft: r < count - 1 && c > 0 && finalDark[r + 1][c - 1] && finalStyle[r + 1][c - 1] === 'liquid',
+        downRight: r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] && finalStyle[r + 1][c + 1] === 'liquid'
+    });
 
     for (let r = 0; r < count; r++) {
         for (let c = 0; c < count; c++) {
@@ -5048,14 +5322,11 @@ function renderQR(isExport, imageOverride) {
                     }
                 }
             }
-            const basisGhost = basisMode && embedImage;
+            const basisGhost = basisMode && embedImage && covered;
             const nonBasisGhost = !basisMode && embedImage && covered;
             const useGhost = (basisGhost || nonBasisGhost) && cell && (cell.type === 'data' || cell.type === 'ec' || functionLikeData);
-            const isProtectedOverlayCell = !!(cell && (cell.type === 'ec' || (cell.type === 'data' && !isEditableDataCell(cell))));
             if (useGhost) {
-                const smallSize = Math.min(moduleW, moduleH) / 2;
-                const offsetX = (moduleW - smallSize) / 2;
-                const offsetY = (moduleH - smallSize) / 2;
+                const moduleRect = getCenteredModuleRect(x, y, moduleW, moduleH, coveredModuleScalePercent);
                 const cx = Math.floor(x + moduleW / 2);
                 const cy = Math.floor(y + moduleH / 2);
                 let lum = sampledLum;
@@ -5070,74 +5341,53 @@ function renderQR(isExport, imageOverride) {
                     isTransparent = false;
                 }
 
-                if (isTransparent) {
-                    drawStyledModule(
-                        x,
-                        y,
-                        moduleW,
-                        moduleH,
-                        activeStyle,
-                        isDark ? fgColor : bgColor
-                    );
-                } else {
-                    let alpha = 0.3;
-                    let shouldDraw = false;
-                    if (isDark) {
-                        if (lum >= 0.25) {
-                            shouldDraw = true;
-                            alpha = Math.max(0, Math.min(1, 1 - (0.25 / lum)));
-                        }
-                        if (isProtectedOverlayCell) {
-                            if (!shouldDraw) {
-                                shouldDraw = true;
-                                alpha = 0.35;
-                            } else {
-                                alpha = Math.max(alpha, 0.35);
-                            }
-                        }
-                        if (shouldDraw) {
-                            drawStyledModule(
-                                x + offsetX,
-                                y + offsetY,
-                                smallSize,
-                                smallSize,
-                                activeStyle,
-                                rgbaFromHex(fgColor, alpha.toFixed(2))
-                            );
-                        }
+                const paint = getModulePaint(isDark, lum, !isTransparent);
+                if (paint.shouldDraw && moduleRect.width > 0 && moduleRect.height > 0) {
+                    if (activeStyle === 'liquid' && isDark) {
+                        drawScaledLiquidConnectedModule(
+                            ctx, x, y, moduleW, moduleH,
+                            moduleRect, paint.css, getLiquidNeighbors(r, c)
+                        );
                     } else {
-                        if (lum <= 0.80) {
-                            shouldDraw = true;
-                            alpha = (lum >= 1) ? 1 : ((0.80 - lum) / (1.0 - lum));
-                            alpha = Math.max(0, Math.min(1, alpha));
-                        }
-                        if (shouldDraw) {
-                            drawStyledModule(
-                                x + offsetX,
-                                y + offsetY,
-                                smallSize,
-                                smallSize,
-                                activeStyle,
-                                rgbaFromHex(bgColor, alpha.toFixed(2))
-                            );
-                        }
+                        drawStyledModule(
+                            moduleRect.x,
+                            moduleRect.y,
+                            moduleRect.width,
+                            moduleRect.height,
+                            activeStyle,
+                            paint.css
+                        );
                     }
                 }
-            } else if (activeStyle === 'liquid' && isDark) {
-                const up = r > 0 && finalDark[r - 1][c] && finalStyle[r - 1][c] === 'liquid';
-                const right = c < count - 1 && finalDark[r][c + 1] && finalStyle[r][c + 1] === 'liquid';
-                const down = r < count - 1 && finalDark[r + 1][c] && finalStyle[r + 1][c] === 'liquid';
-                const left = c > 0 && finalDark[r][c - 1] && finalStyle[r][c - 1] === 'liquid';
-                const upLeft = r > 0 && c > 0 && finalDark[r - 1][c - 1] && finalStyle[r - 1][c - 1] === 'liquid';
-                const upRight = r > 0 && c < count - 1 && finalDark[r - 1][c + 1] && finalStyle[r - 1][c + 1] === 'liquid';
-                const downLeft = r < count - 1 && c > 0 && finalDark[r + 1][c - 1] && finalStyle[r + 1][c - 1] === 'liquid';
-                const downRight = r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] && finalStyle[r + 1][c + 1] === 'liquid';
-                drawLiquidConnectedModule(ctx, x, y, moduleW, moduleH, fgColor, {
-                    up, right, down, left,
-                    upLeft, upRight, downLeft, downRight
-                }, bgColor);
             } else {
-                drawStyledModule(x, y, moduleW, moduleH, activeStyle, isDark ? fgColor : bgColor);
+                const preserveEmphasizedSize = emphasizeThisFunc;
+                const moduleRect = getCenteredModuleRect(
+                    x,
+                    y,
+                    moduleW,
+                    moduleH,
+                    preserveEmphasizedSize ? 100 : moduleScalePercent
+                );
+                const paint = preserveEmphasizedSize
+                    ? { css: isDark ? fgColor : bgColor, alpha: 1, shouldDraw: true, adjusted: false }
+                    : getModulePaint(isDark);
+                if (paint.shouldDraw && moduleRect.width > 0 && moduleRect.height > 0) {
+                    if (activeStyle === 'liquid' && isDark) {
+                        drawScaledLiquidConnectedModule(
+                            ctx, x, y, moduleW, moduleH,
+                            moduleRect, paint.css, getLiquidNeighbors(r, c)
+                        );
+                    } else {
+                        drawStyledModule(
+                            moduleRect.x,
+                            moduleRect.y,
+                            moduleRect.width,
+                            moduleRect.height,
+                            activeStyle,
+                            paint.css
+                        );
+                    }
+                }
             }
 
             if (!isExport && cell) {
@@ -6311,6 +6561,16 @@ async function handleImageUpload(e) {
         }
 
         hasImageUpload = true;
+        setCoveredModuleScalePercent(50, false);
+        if (fgAutoLuminanceCb) fgAutoLuminanceCb.checked = true;
+        if (bgAutoLuminanceCb) bgAutoLuminanceCb.checked = true;
+        foregroundTransparency = 0;
+        backgroundTransparency = 0;
+        if (fgTransparencyRange) fgTransparencyRange.value = '0';
+        if (bgTransparencyRange) bgTransparencyRange.value = '0';
+        if (fgTransparencyValue) fgTransparencyValue.value = '0';
+        if (bgTransparencyValue) bgTransparencyValue.value = '0';
+        setImageColorOptionsVisible(true);
         basisImageWidth = previewImg.naturalWidth || previewImg.width || 0;
         basisImageHeight = previewImg.naturalHeight || previewImg.height || 0;
         refreshImageSizeControlVisibility();
@@ -6472,6 +6732,8 @@ function clearImportedImage() {
     };
     animatedArtCache = null;
     hasImageUpload = false;
+    setCoveredModuleScalePercent(50, false);
+    setImageColorOptionsVisible(false);
     refreshImageSizeControlVisibility();
     stopGifPreview();
     if (embedImageCb) {
