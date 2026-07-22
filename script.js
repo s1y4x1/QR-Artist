@@ -1205,11 +1205,14 @@ const moduleScaleValue = document.getElementById('module-scale-value');
 const coveredModuleScaleGroup = document.getElementById('covered-module-scale-group');
 const coveredModuleScaleRange = document.getElementById('covered-module-scale-range');
 const coveredModuleScaleValue = document.getElementById('covered-module-scale-value');
-const autoLuminanceThresholds = document.getElementById('auto-luminance-thresholds');
-const darkLuminanceRange = document.getElementById('dark-luminance-range');
-const darkLuminanceValue = document.getElementById('dark-luminance-value');
-const lightLuminanceRange = document.getElementById('light-luminance-range');
-const lightLuminanceValue = document.getElementById('light-luminance-value');
+const fgAutoThresholdControl = document.getElementById('fg-auto-threshold-control');
+const bgAutoThresholdControl = document.getElementById('bg-auto-threshold-control');
+const fgAutoThresholdLabel = document.getElementById('fg-auto-threshold-label');
+const bgAutoThresholdLabel = document.getElementById('bg-auto-threshold-label');
+const fgAutoThresholdRange = document.getElementById('fg-auto-threshold-range');
+const bgAutoThresholdRange = document.getElementById('bg-auto-threshold-range');
+const fgAutoThresholdValue = document.getElementById('fg-auto-threshold-value');
+const bgAutoThresholdValue = document.getElementById('bg-auto-threshold-value');
 const cellSizeAutoBtn = document.getElementById('cell-size-auto-btn');
 const embedImageCb = document.getElementById('embed-image-cb');
 const dynamicPreviewCb = document.getElementById('dynamic-preview-cb');
@@ -2000,8 +2003,6 @@ function init() {
     };
     bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
     bindScaleControl(coveredModuleScaleRange, coveredModuleScaleValue, setCoveredModuleScalePercent);
-    bindScaleControl(darkLuminanceRange, darkLuminanceValue, setDarkLuminanceLimit);
-    bindScaleControl(lightLuminanceRange, lightLuminanceValue, setLightLuminanceLimit);
 
     const bindTransparencyControl = (range, numberInput, autoCb, isForeground) => {
         const setTransparency = (value) => {
@@ -2030,6 +2031,7 @@ function init() {
         if (autoCb) {
             autoCb.addEventListener('change', () => {
                 syncTransparencyControlState(range, numberInput, autoCb);
+                syncAutoLuminanceThresholdControls();
                 invalidateAnimatedArtCache();
                 renderQR(false);
             });
@@ -2038,6 +2040,29 @@ function init() {
     };
     bindTransparencyControl(fgTransparencyRange, fgTransparencyValue, fgAutoLuminanceCb, true);
     bindTransparencyControl(bgTransparencyRange, bgTransparencyValue, bgAutoLuminanceCb, false);
+
+    const bindAutoThresholdControl = (range, numberInput, isForeground) => {
+        const applyValue = (value) => {
+            setAutoLuminanceThresholdForColor(isForeground, value, false);
+            invalidateAnimatedArtCache();
+            renderQR(false);
+        };
+        if (range) {
+            range.addEventListener('input', () => applyValue(range.value));
+        }
+        if (numberInput) {
+            numberInput.addEventListener('input', () => {
+                if (numberInput.value === '') return;
+                applyValue(numberInput.value);
+            });
+            numberInput.addEventListener('change', () => {
+                applyValue(numberInput.value === '' ? range.value : numberInput.value);
+            });
+        }
+    };
+    bindAutoThresholdControl(fgAutoThresholdRange, fgAutoThresholdValue, true);
+    bindAutoThresholdControl(bgAutoThresholdRange, bgAutoThresholdValue, false);
+    syncAutoLuminanceThresholdControls();
 
     if (emphasizeFuncCb) {
         resetEmphasizeOptionsToDefault(false);
@@ -2063,6 +2088,7 @@ function init() {
         invertToneCb.checked = false;
         invertToneCb.disabled = true;
         invertToneCb.addEventListener('change', async () => {
+            syncAutoLuminanceThresholdControls();
             if (!hasImageUpload) return;
             invalidateAnimatedArtCache();
             resetSuffix();
@@ -2807,16 +2833,47 @@ function setCoveredModuleScalePercent(value, shouldRender = true) {
 
 function setDarkLuminanceLimit(value, shouldRender = true) {
     darkLuminanceLimit = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
-    if (darkLuminanceRange) darkLuminanceRange.value = String(darkLuminanceLimit);
-    if (darkLuminanceValue) darkLuminanceValue.value = String(darkLuminanceLimit);
+    syncAutoLuminanceThresholdControls();
     if (shouldRender) renderQR(false);
 }
 
 function setLightLuminanceLimit(value, shouldRender = true) {
     lightLuminanceLimit = Math.round(Math.max(0, Math.min(100, Number(value) || 0)));
-    if (lightLuminanceRange) lightLuminanceRange.value = String(lightLuminanceLimit);
-    if (lightLuminanceValue) lightLuminanceValue.value = String(lightLuminanceLimit);
+    syncAutoLuminanceThresholdControls();
     if (shouldRender) renderQR(false);
+}
+
+function setAutoLuminanceThresholdForColor(isForeground, value, shouldRender = true) {
+    const requireLight = isToneInverted() ? isForeground : !isForeground;
+    if (requireLight) setLightLuminanceLimit(value, shouldRender);
+    else setDarkLuminanceLimit(value, shouldRender);
+}
+
+function syncAutoLuminanceThresholdControls() {
+    const foregroundRequiresLight = isToneInverted();
+    const syncOne = (requiresLight, control, label, range, numberInput, autoCb) => {
+        const value = requiresLight ? lightLuminanceLimit : darkLuminanceLimit;
+        if (label) label.textContent = requiresLight ? '亮色明度下限' : '暗色明度上限';
+        if (range) range.value = String(value);
+        if (numberInput) numberInput.value = String(value);
+        if (control) control.hidden = !(autoCb && autoCb.checked);
+    };
+    syncOne(
+        foregroundRequiresLight,
+        fgAutoThresholdControl,
+        fgAutoThresholdLabel,
+        fgAutoThresholdRange,
+        fgAutoThresholdValue,
+        fgAutoLuminanceCb
+    );
+    syncOne(
+        !foregroundRequiresLight,
+        bgAutoThresholdControl,
+        bgAutoThresholdLabel,
+        bgAutoThresholdRange,
+        bgAutoThresholdValue,
+        bgAutoLuminanceCb
+    );
 }
 
 function syncTransparencyControlState(range, numberInput, autoCb) {
@@ -2829,9 +2886,9 @@ function setImageColorOptionsVisible(visible) {
         if (node) node.hidden = !visible;
     });
     if (coveredModuleScaleGroup) coveredModuleScaleGroup.hidden = !visible;
-    if (autoLuminanceThresholds) autoLuminanceThresholds.hidden = !visible;
     syncTransparencyControlState(fgTransparencyRange, fgTransparencyValue, fgAutoLuminanceCb);
     syncTransparencyControlState(bgTransparencyRange, bgTransparencyValue, bgAutoLuminanceCb);
+    syncAutoLuminanceThresholdControls();
 }
 
 function normalizeHexInput(value) {
@@ -5251,15 +5308,15 @@ function renderQR(isExport, imageOverride) {
         }
     }
 
-    const getLiquidNeighbors = (r, c) => ({
-        up: r > 0 && finalDark[r - 1][c] && finalStyle[r - 1][c] === 'liquid',
-        right: c < count - 1 && finalDark[r][c + 1] && finalStyle[r][c + 1] === 'liquid',
-        down: r < count - 1 && finalDark[r + 1][c] && finalStyle[r + 1][c] === 'liquid',
-        left: c > 0 && finalDark[r][c - 1] && finalStyle[r][c - 1] === 'liquid',
-        upLeft: r > 0 && c > 0 && finalDark[r - 1][c - 1] && finalStyle[r - 1][c - 1] === 'liquid',
-        upRight: r > 0 && c < count - 1 && finalDark[r - 1][c + 1] && finalStyle[r - 1][c + 1] === 'liquid',
-        downLeft: r < count - 1 && c > 0 && finalDark[r + 1][c - 1] && finalStyle[r + 1][c - 1] === 'liquid',
-        downRight: r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] && finalStyle[r + 1][c + 1] === 'liquid'
+    const getLiquidNeighbors = (r, c, isDark) => ({
+        up: r > 0 && finalDark[r - 1][c] === isDark && finalStyle[r - 1][c] === 'liquid',
+        right: c < count - 1 && finalDark[r][c + 1] === isDark && finalStyle[r][c + 1] === 'liquid',
+        down: r < count - 1 && finalDark[r + 1][c] === isDark && finalStyle[r + 1][c] === 'liquid',
+        left: c > 0 && finalDark[r][c - 1] === isDark && finalStyle[r][c - 1] === 'liquid',
+        upLeft: r > 0 && c > 0 && finalDark[r - 1][c - 1] === isDark && finalStyle[r - 1][c - 1] === 'liquid',
+        upRight: r > 0 && c < count - 1 && finalDark[r - 1][c + 1] === isDark && finalStyle[r - 1][c + 1] === 'liquid',
+        downLeft: r < count - 1 && c > 0 && finalDark[r + 1][c - 1] === isDark && finalStyle[r + 1][c - 1] === 'liquid',
+        downRight: r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] === isDark && finalStyle[r + 1][c + 1] === 'liquid'
     });
 
     for (let r = 0; r < count; r++) {
@@ -5343,10 +5400,10 @@ function renderQR(isExport, imageOverride) {
 
                 const paint = getModulePaint(isDark, lum, !isTransparent);
                 if (paint.shouldDraw && moduleRect.width > 0 && moduleRect.height > 0) {
-                    if (activeStyle === 'liquid' && isDark) {
+                    if (activeStyle === 'liquid') {
                         drawScaledLiquidConnectedModule(
                             ctx, x, y, moduleW, moduleH,
-                            moduleRect, paint.css, getLiquidNeighbors(r, c)
+                            moduleRect, paint.css, getLiquidNeighbors(r, c, isDark)
                         );
                     } else {
                         drawStyledModule(
@@ -5372,10 +5429,10 @@ function renderQR(isExport, imageOverride) {
                     ? { css: isDark ? fgColor : bgColor, alpha: 1, shouldDraw: true, adjusted: false }
                     : getModulePaint(isDark);
                 if (paint.shouldDraw && moduleRect.width > 0 && moduleRect.height > 0) {
-                    if (activeStyle === 'liquid' && isDark) {
+                    if (activeStyle === 'liquid') {
                         drawScaledLiquidConnectedModule(
                             ctx, x, y, moduleW, moduleH,
-                            moduleRect, paint.css, getLiquidNeighbors(r, c)
+                            moduleRect, paint.css, getLiquidNeighbors(r, c, isDark)
                         );
                     } else {
                         drawStyledModule(

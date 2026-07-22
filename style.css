@@ -173,36 +173,24 @@ h1 {
     opacity: 0.45;
 }
 
-.luminance-thresholds {
-    padding: 8px;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background: #fafafa;
-}
-
-.luminance-thresholds[hidden] {
-    display: none;
-}
-
-.luminance-thresholds > label {
-    font-size: 12px;
-    font-weight: 600;
-    color: #374151;
-}
-
-.threshold-control-row {
+.auto-threshold-control {
     display: flex;
     align-items: center;
     gap: 5px;
+    width: 100%;
     font-size: 12px;
     color: #555;
 }
 
-.threshold-control-row > span:first-child {
-    min-width: 48px;
+.auto-threshold-control[hidden] {
+    display: none;
 }
 
-.threshold-control-row input[type="range"] {
+.auto-threshold-control > span:first-child {
+    min-width: 72px;
+}
+
+.auto-threshold-control input[type="range"] {
     flex: 1;
     min-width: 0;
 }
