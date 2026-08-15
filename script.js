@@ -1267,7 +1267,7 @@ const qrRotationRow = document.getElementById('qr-rotation-row');
 const imageRotationRow = document.getElementById('image-rotation-row');
 
 let CELL_SIZE = 8;
-let qrMargin = 1;
+let qrMargin = 0;
 let moduleStyle = 'square';
 let moduleScalePercent = 100;
 let coveredModuleScalePercent = 50;
@@ -1277,6 +1277,7 @@ let qrRotationDeg = 0;
 let imageRotationDeg = 0;
 let lastNonBasisImportRect = null;
 let lastBasisImportRect = null;
+let lastNonBasisCellSize = null;
 let basisImageWidth = 0;
 let basisImageHeight = 0;
 let lastArtisticSolveStats = null;
@@ -1298,14 +1299,12 @@ function isImageBasisMode() {
 
 function updateRotationAndMarginPanel() {
     const hasImg = !!hasImageUpload;
-    if (!hasImg) {
-        if (outerMarginGroup) outerMarginGroup.style.display = '';
-        if (rotationGroup) rotationGroup.style.display = 'none';
-        return;
-    }
-    if (outerMarginGroup) outerMarginGroup.style.display = 'none';
-    if (rotationGroup) rotationGroup.style.display = '';
     const basis = isImageBasisMode();
+    // Outer margin is always visible; it is only non-settable in image-basis mode.
+    if (outerMarginGroup) outerMarginGroup.style.display = '';
+    if (outerMarginValue) outerMarginValue.disabled = basis;
+    // Rotation group only appears once an image is uploaded.
+    if (rotationGroup) rotationGroup.style.display = hasImg ? '' : 'none';
     if (qrRotationRow) qrRotationRow.style.display = basis ? '' : 'none';
     if (imageRotationRow) imageRotationRow.style.display = basis ? 'none' : '';
 }
@@ -2331,6 +2330,7 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
                         relX: importState.relX,
                         relY: importState.relY
                     };
+                    lastNonBasisCellSize = CELL_SIZE;
                     if (lastBasisImportRect) {
                         importState.width = lastBasisImportRect.width;
                         importState.height = lastBasisImportRect.height;
@@ -2365,11 +2365,18 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
                     }
                     importState.x = canvas.offsetLeft + importState.relX;
                     importState.y = canvas.offsetTop + importState.relY;
-                    const candidate = getAutoCellSizeCandidate();
-                    if (candidate) {
-                        CELL_SIZE = candidate;
+                    if (lastNonBasisCellSize != null) {
+                        CELL_SIZE = lastNonBasisCellSize;
+                        lastNonBasisCellSize = null;
                         const cellSizeInput = document.getElementById('cell-size-input');
-                        if (cellSizeInput) cellSizeInput.value = candidate.toFixed(1);
+                        if (cellSizeInput) cellSizeInput.value = CELL_SIZE.toFixed(1);
+                    } else {
+                        const candidate = getAutoCellSizeCandidate();
+                        if (candidate) {
+                            CELL_SIZE = candidate;
+                            const cellSizeInput = document.getElementById('cell-size-input');
+                            if (cellSizeInput) cellSizeInput.value = candidate.toFixed(1);
+                        }
                     }
                 }
 
@@ -2695,6 +2702,7 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
         if (importState.active || previewImg.src) {
                lastNonBasisImportRect = null;
                lastBasisImportRect = null;
+               lastNonBasisCellSize = null;
              importState.active = false;
              importState.width = 0;
              importState.height = 0;
@@ -5115,28 +5123,6 @@ async function updateQR(options = {}) {
         currentSuffixBytes = new Array(capacityBytes).fill(32); // fill space
     }
 
-    // While whiten-lock is active, apply the locked uniform fill BEFORE any
-    // computation (e.g. EC-region fitting) so the solve runs on the filled
-    // suffix instead of wasting work on the pre-fill data.
-    if (whitenLocked && !applyingWhitenLock) {
-        applyingWhitenLock = true;
-        try {
-            if (lastWhitenMode === 'white' || lastWhitenMode === 'black') {
-                if (maskPattern === -1) {
-                    const bestMask = (lastState.mask >= 0) ? lastState.mask : 0;
-                    maskPattern = bestMask;
-                    lastManualMask = bestMask;
-                    updateMaskControls();
-                }
-                hasUserEdits = true;
-                setSuffixUniform(lastWhitenMode === 'white' ? 0 : 1);
-                drawnPixels.clear();
-            }
-        } finally {
-            applyingWhitenLock = false;
-        }
-    }
-
     // Helper to write bits to buffer
     const writeBufferBits = (buffer, targetBitArray) => {
         const len = buffer.getLengthInBits();
@@ -5233,6 +5219,31 @@ async function updateQR(options = {}) {
         const afterTermBits = segBits + termBits;
         payloadStartBit = Math.min(totalDataBits, Math.ceil(afterTermBits / 8) * 8);
         payloadEditableEndBit = totalDataBits;
+    }
+
+    // While whiten-lock is active, apply the locked uniform fill BEFORE any
+    // computation (e.g. EC-region fitting) so the solve runs on the filled
+    // suffix instead of wasting work on the pre-fill data. It must run AFTER
+    // the payload range (payloadStartBit/payloadEditableEndBit) is computed,
+    // otherwise resetSuffix() zeroes the range and the fill is a no-op
+    // (breaking auto-execution after e.g. ECC/version changes).
+    if (whitenLocked && !applyingWhitenLock) {
+        applyingWhitenLock = true;
+        try {
+            if (lastWhitenMode === 'white' || lastWhitenMode === 'black') {
+                if (maskPattern === -1) {
+                    const bestMask = (lastState.mask >= 0) ? lastState.mask : 0;
+                    maskPattern = bestMask;
+                    lastManualMask = bestMask;
+                    updateMaskControls();
+                }
+                hasUserEdits = true;
+                setSuffixUniform(lastWhitenMode === 'white' ? 0 : 1);
+                drawnPixels.clear();
+            }
+        } finally {
+            applyingWhitenLock = false;
+        }
     }
 
     if (!skipArtisticPass && artisticModeOn && hasImageUpload && importState.active) {
@@ -5381,8 +5392,8 @@ function renderQR(isExport, imageOverride) {
         // In image-basis mode, keep image pixel size fixed.
         canvasW = Math.max(1, Math.round(basisImageWidth || srcDim.width));
         canvasH = Math.max(1, Math.round(basisImageHeight || srcDim.height));
-    } else if (!imageReady && outerMarginPx > 0) {
-        // No image uploaded: wrap the QR with an outer margin (px) on each side.
+    } else if (!basisMode && outerMarginPx > 0) {
+        // Non-basis mode: wrap the QR with an outer margin (px) on each side.
         canvasW = baseSize + 2 * outerMarginPx;
         canvasH = baseSize + 2 * outerMarginPx;
     }
@@ -5464,8 +5475,8 @@ function renderQR(isExport, imageOverride) {
         qrOriginY = box.y;
         qrW = Math.max(1, box.width);
         qrH = Math.max(1, box.height);
-    } else if (!imageReady && outerMarginPx > 0) {
-        // No image uploaded: inset the QR box by the outer margin.
+    } else if (!basisMode && outerMarginPx > 0) {
+        // Non-basis mode: inset the QR box by the outer margin.
         qrOriginX = outerMarginPx;
         qrOriginY = outerMarginPx;
         qrW = baseSize;
@@ -5817,9 +5828,15 @@ function getMapCoord(e) {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
 
-    // When no image is uploaded, the QR is inset by the outer margin.
-    const originX = hasImageUpload ? 0 : outerMarginPx;
-    const originY = hasImageUpload ? 0 : outerMarginPx;
+    // The QR grid origin on canvas: in image-basis mode it sits at the basis
+    // box, otherwise it is inset by the outer margin (px).
+    let originX = outerMarginPx;
+    let originY = outerMarginPx;
+    if (isImageBasisMode()) {
+        const basisBox = getBasisQrBoxInternal();
+        originX = basisBox.x;
+        originY = basisBox.y;
+    }
 
     const c = Math.floor((x - originX)/CELL_SIZE) - qrMargin;
     const r = Math.floor((y - originY)/CELL_SIZE) - qrMargin;
@@ -6770,6 +6787,7 @@ async function handleImageUpload(e) {
 
     lastNonBasisImportRect = null;
     lastBasisImportRect = null;
+    lastNonBasisCellSize = null;
 
     stopGifPreview();
     invalidateAnimatedArtCache();
@@ -7077,6 +7095,7 @@ function clearImportedImage() {
     importState.active = false;
     lastNonBasisImportRect = null;
     lastBasisImportRect = null;
+    lastNonBasisCellSize = null;
     importState.width = 0;
     importState.height = 0;
     importOverlay.classList.remove('import-outside');
