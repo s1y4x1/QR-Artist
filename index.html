@@ -142,13 +142,45 @@
                 </select>
             </div>
 
-            <div class="control-group hz-layout" id="image-size-group" style="display:none;">
+<div class="control-group hz-layout" id="image-size-group" style="display:none;">
                 <label>图片大小 (Px):</label>
                 <div class="image-size-control">
                     <input type="number" id="img-size-w" min="1" step="1" value="100" style="width: 64px;">
                     <span>×</span>
                     <input type="number" id="img-size-h" min="1" step="1" value="100" style="width: 64px;">
                     <button id="img-size-reset-btn" type="button" class="mask-btn">恢复</button>
+                </div>
+            </div>
+
+            <div class="control-group hz-layout" id="outer-margin-group" style="display:none">
+                <label>外边距:</label>
+                <div class="rotation-controls">
+                    <div class="rotation-row">
+                        <input type="number" class="range-number-input outer-margin-input" id="outer-margin-value" min="0" step="1" value="0" aria-label="外边距(像素)">
+                        <span class="px-unit">px</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-group hz-layout" id="rotation-group" style="display:none">
+                <label>旋转:</label>
+                <div class="rotation-controls">
+                    <div class="rotation-row" id="image-rotation-row">
+                        <span class="rotation-label">图片</span>
+                        <div class="range-value-control">
+                            <input type="range" id="image-rotation-range" min="0" max="360" value="0" step="1">
+                            <input type="number" class="range-number-input" id="image-rotation-value" value="0" step="any" aria-label="图片旋转角度">
+                            <span class="range-unit">°</span>
+                        </div>
+                    </div>
+                    <div class="rotation-row" id="qr-rotation-row" style="display:none">
+                        <span class="rotation-label">二维码</span>
+                        <div class="range-value-control">
+                            <input type="range" id="qr-rotation-range" min="0" max="360" value="0" step="1">
+                            <input type="number" class="range-number-input" id="qr-rotation-value" value="0" step="any" aria-label="二维码旋转角度">
+                            <span class="range-unit">°</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -237,7 +269,7 @@
                 <div class="tools">
                     <button id="import-btn" class="tool-btn" title="上传图片/视频 (自动像素化)">🖼️</button>
                     <button id="clear-draw" class="tool-btn" title="清空绘制">🗑️</button>
-                    <button id="whiten-btn" class="tool-btn" title="一键全白 (自由区填充白色)">✨</button>
+                    <button id="whiten-btn" class="tool-btn" title="一键全白 (自由区填充白色)">☀️</button>
                     <button id="download-btn" class="tool-btn" title="下载图片/视频">💾</button>
                 </div>
 

@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双态透明二维码生成器</title>
+    <script src="qrcode-lib.js"></script>
+    <style>
+        :root {
+            --bg: #f7f7f7;
+            --card: #ffffff;
+            --text: #1f2937;
+            --line: #d1d5db;
+            --primary: #0f766e;
+            --danger: #b91c1c;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 24px auto;
+            padding: 0 14px;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 14px;
+        }
+
+        h1 {
+            margin: 0 0 10px;
+            font-size: 24px;
+        }
+
+        p {
+            margin: 8px 0;
+            line-height: 1.55;
+        }
+
+        .rule {
+            background: #ecfeff;
+            border-left: 4px solid #0e7490;
+            padding: 10px 12px;
+            border-radius: 8px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            align-items: end;
+        }
+
+        .full {
+            grid-column: 1 / -1;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        textarea,
+        input,
+        select,
+        button {
+            width: 100%;
+            font: inherit;
+        }
+
+        textarea,
+        input,
+        select {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 9px 10px;
+            background: #fff;
+        }
+
+        textarea {
+            min-height: 110px;
+            resize: vertical;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .actions button {
+            flex: 1;
+            min-width: 180px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .actions button:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+
+        .actions button.primary {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+
+        .status {
+            min-height: 1.5em;
+            margin-top: 8px;
+            font-weight: 600;
+        }
+
+        .progress-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 4px 0 8px;
+        }
+
+        .progress {
+            width: 260px;
+            height: 12px;
+        }
+
+        .progress-text {
+            font-size: 13px;
+            color: #4b5563;
+        }
+
+        .ok {
+            color: #065f46;
+        }
+
+        .err {
+            color: var(--danger);
+        }
+
+        .canvases {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .canvas-box {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px;
+            background: #fff;
+        }
+
+        .canvas-box h2 {
+            margin: 0 0 8px;
+            font-size: 15px;
+        }
+
+        .checker {
+            background-image:
+                linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
+                linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
+                linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+            background-size: 16px 16px;
+            background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .preview-white {
+            background: #ffffff;
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .preview-black {
+            background: #000000;
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            image-rendering: pixelated;
+            border: 1px solid #c7cdd6;
+            background: transparent;
+        }
+
+        .mono {
+            font-family: Consolas, Menlo, monospace;
+            font-size: 13px;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 900px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+
+            .canvases {
+                grid-template-columns: 1fr;
+            }
+
+            .progress-wrap {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .progress {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <section class="card">
+            <h1>双态透明二维码生成器</h1>
+            <p>输入 A/B 后，页面会搜索版本与掩码组合，并可利用填充字节的自由度在 GF(2) 上求解约束方程组，进一步减少两种底色之间的冲突。</p>
+            <div class="rule">
+                核心关系：<span class="mono">Dark(B) ⊇ Dark(A)</span>。
+                当前容错近似：<span class="mono">allowed = floor(B暗模块数 × 容错率)</span>。
+                灰色模块表示冲突位（A暗且B亮）；GF(2) 优化只改写解码器会忽略的终止符后填充字节，并重新计算纠错码。
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="grid">
+                <div>
+                    <label for="payload-a">白底内容 A</label>
+                    <textarea id="payload-a" placeholder="例如：https://example.com/A"></textarea>
+                </div>
+                <div>
+                    <label for="payload-b">黑底内容 B</label>
+                    <textarea id="payload-b" placeholder="例如：https://example.com/B"></textarea>
+                </div>
+                <div>
+                    <label for="ecc">容错级别</label>
+                    <select id="ecc">
+                        <option value="L">L (7%)</option>
+                        <option value="M" selected>M (15%)</option>
+                        <option value="Q">Q (25%)</option>
+                        <option value="H">H (30%)</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="version">起始版本 (0=从1开始搜索)</label>
+                    <input id="version" type="number" min="0" max="40" step="1" value="0">
+                </div>
+                <div>
+                    <label for="module-size">模块像素</label>
+                    <input id="module-size" type="number" min="2" max="30" step="1" value="8">
+                </div>
+                <div class="full">
+                    <label style="display:flex; align-items:center; gap:8px; margin:0;">
+                        <input id="maximize-transparent" type="checkbox" style="width:auto;" checked>
+                        <span>透明增强（偏好白底更白、黑底更黑）</span>
+                    </label>
+                </div>
+                <div class="full">
+                    <label style="display:flex; align-items:center; gap:8px; margin:0;">
+                        <input id="gf2-optimize" type="checkbox" style="width:auto;" checked>
+                        <span>GF(2) 方程组优化（利用填充字节，生成稍慢）</span>
+                    </label>
+                </div>
+                <div class="full actions">
+                    <button id="generate-btn" class="primary" type="button">生成透明二维码</button>
+                    <button id="download-btn" type="button">下载 PNG</button>
+                </div>
+            </div>
+
+            <p id="status" class="status"></p>
+            <div class="progress-wrap">
+                <progress id="search-progress" class="progress" max="100" value="0"></progress>
+                <span id="progress-text" class="progress-text">0%</span>
+            </div>
+            <p id="meta" class="mono"></p>
+        </section>
+
+        <section class="card">
+            <div class="canvases">
+                <div class="canvas-box">
+                    <h2>透明 PNG（原图）</h2>
+                    <div class="checker">
+                        <canvas id="transparent-canvas"></canvas>
+                    </div>
+                </div>
+                <div class="canvas-box">
+                    <h2>白底预览（目标 A）</h2>
+                    <div class="preview-white">
+                        <canvas id="white-preview"></canvas>
+                    </div>
+                </div>
+                <div class="canvas-box">
+                    <h2>黑底预览（目标 B）</h2>
+                    <div class="preview-black">
+                        <canvas id="black-preview"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        (function () {
+            const MARGIN_MODULES = 1;
+            const VIOLATION_COLOR = '#808080';
+
+            const payloadAEl = document.getElementById('payload-a');
+            const payloadBEl = document.getElementById('payload-b');
+            const eccEl = document.getElementById('ecc');
+            const versionEl = document.getElementById('version');
+            const moduleSizeEl = document.getElementById('module-size');
+            const maximizeTransparentEl = document.getElementById('maximize-transparent');
+            const gf2OptimizeEl = document.getElementById('gf2-optimize');
+            const generateBtn = document.getElementById('generate-btn');
+            const downloadBtn = document.getElementById('download-btn');
+            const statusEl = document.getElementById('status');
+            const progressEl = document.getElementById('search-progress');
+            const progressTextEl = document.getElementById('progress-text');
+            const metaEl = document.getElementById('meta');
+
+            const transparentCanvas = document.getElementById('transparent-canvas');
+            const whitePreviewCanvas = document.getElementById('white-preview');
+            const blackPreviewCanvas = document.getElementById('black-preview');
+
+            let lastGenerated = null;
+
+            function setStatus(text, isError) {
+                statusEl.textContent = text || '';
+                statusEl.className = 'status ' + (isError ? 'err' : 'ok');
+            }
+
+            function setProgress(done, total, label) {
+                const t = Math.max(1, Number(total) || 1);
+                const d = Math.max(0, Math.min(t, Number(done) || 0));
+                const percent = Math.floor((d / t) * 100);
+                progressEl.value = percent;
+                progressTextEl.textContent = label ? `${percent}% · ${label}` : `${percent}%`;
+            }
+
+            function tickUi() {
+                return new Promise(function (resolve) {
+                    setTimeout(resolve, 0);
+                });
+            }
+
+            function toByteString(text) {
+                return unescape(encodeURIComponent(text));
+            }
+
+            function clampInt(value, min, max, fallback) {
+                const n = Number.parseInt(value, 10);
+                if (!Number.isFinite(n)) return fallback;
+                return Math.max(min, Math.min(max, n));
+            }
+
+            function getEccRate(ecc) {
+                if (ecc === 'L') return 0.07;
+                if (ecc === 'M') return 0.15;
+                if (ecc === 'Q') return 0.25;
+                if (ecc === 'H') return 0.30;
+                return 0.15;
+            }
+
+            function createQr(payload, version, ecc, mask, padBytes) {
+                const qr = qrcode(version, ecc);
+                qr.addData(toByteString(payload), 'Byte');
+                if (padBytes && padBytes.length && typeof qr.setCustomPadBytes === 'function') {
+                    qr.setCustomPadBytes(padBytes);
+                }
+                if (typeof qr.makeMasked === 'function' && mask >= 0) {
+                    qr.makeMasked(mask);
+                } else {
+                    qr.make();
+                }
+                return qr;
+            }
+
+            function getPadByteCount(payload, version, ecc) {
+                if (!qrcode.QRRSBlock || !qrcode.QRErrorCorrectionLevel) return 0;
+                const level = qrcode.QRErrorCorrectionLevel[ecc];
+                const blocks = qrcode.QRRSBlock.getRSBlocks(version, level);
+                let totalDataBytes = 0;
+                for (let i = 0; i < blocks.length; i++) totalDataBytes += blocks[i].dataCount;
+
+                const payloadBytes = toByteString(payload).length;
+                const lengthBits = version < 10 ? 8 : 16;
+                let usedBits = 4 + lengthBits + payloadBytes * 8;
+                const capacityBits = totalDataBytes * 8;
+                if (usedBits > capacityBits) return 0;
+                usedBits += Math.min(4, capacityBits - usedBits);
+                if (usedBits % 8) usedBits += 8 - (usedBits % 8);
+                return Math.max(0, totalDataBytes - Math.ceil(usedBits / 8));
+            }
+
+            function createDefaultPadBytes(count) {
+                const pads = new Array(Math.max(0, count));
+                for (let i = 0; i < pads.length; i++) pads[i] = (i % 2 === 0) ? 0xec : 0x11;
+                return pads;
+            }
+
+            function flattenQrBits(qr) {
+                const count = qr.getModuleCount();
+                const bits = new Uint8Array(count * count);
+                let ptr = 0;
+                for (let r = 0; r < count; r++) {
+                    for (let c = 0; c < count; c++) bits[ptr++] = qr.isDark(r, c) ? 1 : 0;
+                }
+                return bits;
+            }
+
+            function analyzeQrPair(qrA, qrB, ecc) {
+                const count = qrA.getModuleCount();
+                let violations = 0;
+                let transparentModules = 0;
+                let bDarkModules = 0;
+                for (let r = 0; r < count; r++) {
+                    for (let c = 0; c < count; c++) {
+                        const aDark = qrA.isDark(r, c);
+                        const bDark = qrB.isDark(r, c);
+                        if (aDark && !bDark) violations += 1;
+                        if (!aDark && bDark) transparentModules += 1;
+                        if (bDark) bDarkModules += 1;
+                    }
+                }
+                const allowedViolations = Math.floor(bDarkModules * getEccRate(ecc));
+                return {
+                    count,
+                    bDarkModules,
+                    transparentModules,
+                    transparencyRatio: bDarkModules > 0 ? transparentModules / bDarkModules : 0,
+                    violations,
+                    allowedViolations,
+                    accepted: violations <= allowedViolations
+                };
+            }
+
+            function selectEvenlySpaced(items, limit) {
+                if (items.length <= limit) return items.slice();
+                const out = [];
+                const used = new Set();
+                for (let i = 0; i < limit; i++) {
+                    const idx = Math.round((i * (items.length - 1)) / Math.max(1, limit - 1));
+                    if (!used.has(idx)) {
+                        used.add(idx);
+                        out.push(items[idx]);
+                    }
+                }
+                return out;
+            }
+
+            function buildPadVariables(padA, padB, maxVariables) {
+                const all = [];
+                for (let byteIndex = 0; byteIndex < padA.length; byteIndex++) {
+                    for (let bit = 0; bit < 8; bit++) all.push({ side: 'A', byteIndex, bit });
+                }
+                for (let byteIndex = 0; byteIndex < padB.length; byteIndex++) {
+                    for (let bit = 0; bit < 8; bit++) all.push({ side: 'B', byteIndex, bit });
+                }
+                return selectEvenlySpaced(all, maxVariables);
+            }
+
+            function solveConsistentGF2(rows, rhs, varCount) {
+                const basis = new Array(varCount).fill(null);
+                let rank = 0;
+                let skipped = 0;
+
+                for (let i = 0; i < rows.length; i++) {
+                    const row = new Uint8Array(varCount + 1);
+                    row.set(rows[i]);
+                    row[varCount] = rhs[i] & 1;
+
+                    for (let col = 0; col < varCount; col++) {
+                        if (!row[col] || !basis[col]) continue;
+                        const pivot = basis[col];
+                        for (let k = col; k <= varCount; k++) row[k] ^= pivot[k];
+                    }
+
+                    let pivotCol = -1;
+                    for (let col = 0; col < varCount; col++) {
+                        if (row[col]) {
+                            pivotCol = col;
+                            break;
+                        }
+                    }
+                    if (pivotCol < 0) {
+                        if (row[varCount]) skipped += 1;
+                        continue;
+                    }
+
+                    for (let col = 0; col < varCount; col++) {
+                        if (col === pivotCol || !basis[col] || !basis[col][pivotCol]) continue;
+                        const other = basis[col];
+                        for (let k = pivotCol; k <= varCount; k++) other[k] ^= row[k];
+                    }
+                    basis[pivotCol] = row;
+                    rank += 1;
+                }
+
+                const solution = new Uint8Array(varCount);
+                for (let col = varCount - 1; col >= 0; col--) {
+                    const row = basis[col];
+                    if (!row) continue;
+                    let value = row[varCount];
+                    for (let k = col + 1; k < varCount; k++) {
+                        if (row[k]) value ^= solution[k];
+                    }
+                    solution[col] = value & 1;
+                }
+                return { solution, rank, skipped };
+            }
+
+            function applyPadVariableSolution(baseA, baseB, variables, solution) {
+                const padA = baseA.slice();
+                const padB = baseB.slice();
+                for (let i = 0; i < variables.length; i++) {
+                    if (!solution[i]) continue;
+                    const variable = variables[i];
+                    const target = variable.side === 'A' ? padA : padB;
+                    target[variable.byteIndex] ^= (1 << variable.bit);
+                }
+                return { padA, padB };
+            }
+
+            function isGfCandidateBetter(next, current) {
+                if (!current) return true;
+                if (next.accepted !== current.accepted) return !!next.accepted;
+                if (next.violations !== current.violations) return next.violations < current.violations;
+                if (next.transparentModules !== current.transparentModules) {
+                    return next.transparentModules > current.transparentModules;
+                }
+                return false;
+            }
+
+            async function optimizeCandidateGF2(candidate, payloadA, payloadB, ecc, onProgress) {
+                const padCountA = getPadByteCount(payloadA, candidate.version, ecc);
+                const padCountB = getPadByteCount(payloadB, candidate.version, ecc);
+                const initialViolations = candidate.violations;
+                if (padCountA + padCountB <= 0) {
+                    candidate.gfStats = { variables: 0, rank: 0, iterations: 0, initialViolations };
+                    return candidate;
+                }
+
+                let currentPadA = createDefaultPadBytes(padCountA);
+                let currentPadB = createDefaultPadBytes(padCountB);
+                let current = Object.assign({}, candidate, { padA: currentPadA, padB: currentPadB });
+                const variables = buildPadVariables(currentPadA, currentPadB, 96);
+                if (!variables.length) return current;
+
+                const baseBitsA = flattenQrBits(current.qrA);
+                const baseBitsB = flattenQrBits(current.qrB);
+                const influences = new Array(variables.length);
+                const influenceSteps = variables.length;
+                const totalSteps = influenceSteps + 12;
+
+                for (let j = 0; j < variables.length; j++) {
+                    const variable = variables[j];
+                    const testA = currentPadA.slice();
+                    const testB = currentPadB.slice();
+                    const targetPads = variable.side === 'A' ? testA : testB;
+                    targetPads[variable.byteIndex] ^= (1 << variable.bit);
+                    const testQr = createQr(
+                        variable.side === 'A' ? payloadA : payloadB,
+                        candidate.version,
+                        ecc,
+                        candidate.mask,
+                        variable.side === 'A' ? testA : testB
+                    );
+                    const testBits = flattenQrBits(testQr);
+                    const sourceBits = variable.side === 'A' ? baseBitsA : baseBitsB;
+                    const delta = new Uint8Array(sourceBits.length);
+                    for (let i = 0; i < delta.length; i++) delta[i] = sourceBits[i] ^ testBits[i];
+                    influences[j] = delta;
+
+                    if (typeof onProgress === 'function') {
+                        onProgress(j + 1, totalSteps, `GF(2) 影响矩阵 ${j + 1}/${variables.length}`);
+                    }
+                    if ((j & 7) === 7) await tickUi();
+                }
+
+                let totalRank = 0;
+                let completedIterations = 0;
+                const strategies = ['balanced', 'A', 'B'];
+                for (let iteration = 0; iteration < 4; iteration++) {
+                    const bitsA = flattenQrBits(current.qrA);
+                    const bitsB = flattenQrBits(current.qrB);
+                    const conflicts = [];
+                    for (let i = 0; i < bitsA.length; i++) {
+                        if (bitsA[i] && !bitsB[i]) conflicts.push(i);
+                    }
+                    if (!conflicts.length) break;
+
+                    const selectedConflicts = selectEvenlySpaced(conflicts, Math.min(conflicts.length, variables.length * 2));
+                    let bestTrial = current;
+                    let bestTrialPads = null;
+                    let bestRank = 0;
+
+                    for (let strategyIndex = 0; strategyIndex < strategies.length; strategyIndex++) {
+                        const strategy = strategies[strategyIndex];
+                        const rows = [];
+                        const rhs = [];
+
+                        for (let eq = 0; eq < selectedConflicts.length; eq++) {
+                            const moduleIndex = selectedConflicts[eq];
+                            let supportA = 0;
+                            let supportB = 0;
+                            for (let j = 0; j < variables.length; j++) {
+                                if (!influences[j][moduleIndex]) continue;
+                                if (variables[j].side === 'A') supportA += 1;
+                                else supportB += 1;
+                            }
+
+                            let chosenSide = strategy;
+                            if (strategy === 'balanced') {
+                                chosenSide = ((eq + iteration) % 2 === 0) ? 'A' : 'B';
+                                if (chosenSide === 'A' && supportA === 0) chosenSide = 'B';
+                                if (chosenSide === 'B' && supportB === 0) chosenSide = 'A';
+                                if (supportA !== supportB && Math.min(supportA, supportB) === 0) {
+                                    chosenSide = supportA > supportB ? 'A' : 'B';
+                                }
+                            }
+                            if ((chosenSide === 'A' ? supportA : supportB) === 0) continue;
+
+                            const row = new Uint8Array(variables.length);
+                            for (let j = 0; j < variables.length; j++) {
+                                if (variables[j].side === chosenSide) row[j] = influences[j][moduleIndex];
+                            }
+                            rows.push(row);
+                            rhs.push(1);
+                        }
+
+                        if (!rows.length) continue;
+                        const solved = solveConsistentGF2(rows, rhs, variables.length);
+                        const pads = applyPadVariableSolution(currentPadA, currentPadB, variables, solved.solution);
+                        const qrA = createQr(payloadA, candidate.version, ecc, candidate.mask, pads.padA);
+                        const qrB = createQr(payloadB, candidate.version, ecc, candidate.mask, pads.padB);
+                        const metrics = analyzeQrPair(qrA, qrB, ecc);
+                        const trial = Object.assign({}, candidate, metrics, { qrA, qrB, padA: pads.padA, padB: pads.padB });
+
+                        if (isGfCandidateBetter(trial, bestTrial)) {
+                            bestTrial = trial;
+                            bestTrialPads = pads;
+                            bestRank = solved.rank;
+                        }
+                        if (typeof onProgress === 'function') {
+                            onProgress(
+                                influenceSteps + iteration * 3 + strategyIndex + 1,
+                                totalSteps,
+                                `GF(2) 第${iteration + 1}轮 ${strategy}`
+                            );
+                        }
+                        await tickUi();
+                    }
+
+                    if (!bestTrialPads || !isGfCandidateBetter(bestTrial, current)) break;
+                    current = bestTrial;
+                    currentPadA = bestTrialPads.padA;
+                    currentPadB = bestTrialPads.padB;
+                    totalRank = Math.max(totalRank, bestRank);
+                    completedIterations += 1;
+                }
+
+                current.gfStats = {
+                    variables: variables.length,
+                    rank: totalRank,
+                    iterations: completedIterations,
+                    initialViolations
+                };
+                return current;
+            }
+
+            function drawTriStateMatrixToCanvas(targetCanvas, solution, moduleSize) {
+                const count = solution.count;
+                const totalModules = count + MARGIN_MODULES * 2;
+                const size = totalModules * moduleSize;
+
+                targetCanvas.width = size;
+                targetCanvas.height = size;
+
+                const ctx = targetCanvas.getContext('2d');
+                ctx.clearRect(0, 0, size, size);
+
+                const qrX = MARGIN_MODULES * moduleSize;
+                const qrY = MARGIN_MODULES * moduleSize;
+                const qrPx = count * moduleSize;
+
+                // Keep quiet zone white for better compatibility.
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, size, qrY);
+                ctx.fillRect(0, qrY + qrPx, size, size - (qrY + qrPx));
+                ctx.fillRect(0, qrY, qrX, qrPx);
+                ctx.fillRect(qrX + qrPx, qrY, size - (qrX + qrPx), qrPx);
+
+                for (let r = 0; r < count; r++) {
+                    for (let c = 0; c < count; c++) {
+                        const aDark = solution.qrA.isDark(r, c);
+                        const bDark = solution.qrB.isDark(r, c);
+                        const x = qrX + c * moduleSize;
+                        const y = qrY + r * moduleSize;
+
+                        if (aDark && !bDark) {
+                            ctx.fillStyle = VIOLATION_COLOR;
+                            ctx.fillRect(x, y, moduleSize, moduleSize);
+                        } else if (aDark) {
+                            ctx.fillStyle = '#000000';
+                            ctx.fillRect(x, y, moduleSize, moduleSize);
+                        } else if (!bDark) {
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(x, y, moduleSize, moduleSize);
+                        }
+                        // a=0,b=1 keeps transparent.
+                    }
+                }
+            }
+
+            function composePreviewFrom(transparentSrc, background, targetCanvas) {
+                targetCanvas.width = transparentSrc.width;
+                targetCanvas.height = transparentSrc.height;
+                const ctx = targetCanvas.getContext('2d');
+                ctx.fillStyle = background;
+                ctx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+                ctx.drawImage(transparentSrc, 0, 0);
+            }
+
+            function isBetterCandidate(next, current, preferTransparency) {
+                if (!current) return true;
+                if (next.accepted !== current.accepted) {
+                    return !!next.accepted;
+                }
+                return isBetterByViolation(next, current, preferTransparency);
+            }
+
+            function isBetterByViolation(next, current, preferTransparency) {
+                if (!current) return true;
+                if (preferTransparency) {
+                    if (next.transparencyRatio !== current.transparencyRatio) {
+                        return next.transparencyRatio > current.transparencyRatio;
+                    }
+                    if (next.transparentModules !== current.transparentModules) {
+                        return next.transparentModules > current.transparentModules;
+                    }
+                }
+                if (next.violations !== current.violations) {
+                    return next.violations < current.violations;
+                }
+                if (next.version !== current.version) {
+                    return next.version < current.version;
+                }
+                return next.mask < current.mask;
+            }
+
+            async function findFeasibleSolution(payloadA, payloadB, ecc, requestedVersion, preferTransparency, onProgress) {
+                const versions = [];
+                if (requestedVersion > 0) {
+                    versions.push(requestedVersion);
+                } else {
+                    for (let v = 1; v <= 40; v++) versions.push(v);
+                }
+
+                const eccRate = getEccRate(ecc);
+                const totalSteps = versions.length * 8;
+                let doneSteps = 0;
+                let bestStrictCandidate = null;
+                let bestAcceptedCandidate = null;
+                let bestCandidate = null;
+
+                for (const version of versions) {
+                    try {
+                        createQr(payloadA, version, ecc, 0);
+                        createQr(payloadB, version, ecc, 0);
+                    } catch (_) {
+                        doneSteps += 8;
+                        if (typeof onProgress === 'function') {
+                            onProgress(doneSteps, totalSteps, `v${version} 容量不足`);
+                        }
+                        continue;
+                    }
+
+                    for (let mask = 0; mask <= 7; mask++) {
+                        doneSteps += 1;
+                        if (typeof onProgress === 'function') {
+                            onProgress(doneSteps, totalSteps, `v${version} m=${mask}`);
+                        }
+
+                        let qrA = null;
+                        let qrB = null;
+                        try {
+                            qrA = createQr(payloadA, version, ecc, mask);
+                            qrB = createQr(payloadB, version, ecc, mask);
+                        } catch (_) {
+                            continue;
+                        }
+
+                        if (!qrA || !qrB) continue;
+                        const count = qrA.getModuleCount();
+                        if (count !== qrB.getModuleCount()) continue;
+
+                        let violations = 0;
+                        let transparentModules = 0;
+                        let bDarkModules = 0;
+                        for (let r = 0; r < count; r++) {
+                            for (let c = 0; c < count; c++) {
+                                const aDark = qrA.isDark(r, c);
+                                const bDark = qrB.isDark(r, c);
+                                if (aDark && !bDark) {
+                                    violations += 1;
+                                }
+                                if (!aDark && bDark) {
+                                    transparentModules += 1;
+                                }
+                                if (bDark) {
+                                    bDarkModules += 1;
+                                }
+                            }
+                        }
+
+                        const allowedViolations = Math.floor(bDarkModules * eccRate);
+                        const transparencyRatio = (bDarkModules > 0)
+                            ? (transparentModules / bDarkModules)
+                            : 0;
+                        const candidate = {
+                            version,
+                            mask,
+                            count,
+                            bDarkModules,
+                            transparentModules,
+                            transparencyRatio,
+                            violations,
+                            allowedViolations,
+                            qrA,
+                            qrB,
+                            accepted: violations <= allowedViolations
+                        };
+
+                        if (candidate.violations === 0 && isBetterByViolation(candidate, bestStrictCandidate, preferTransparency)) {
+                            bestStrictCandidate = candidate;
+                        }
+
+                        if (candidate.accepted && isBetterByViolation(candidate, bestAcceptedCandidate, preferTransparency)) {
+                            bestAcceptedCandidate = candidate;
+                        }
+
+                        if (isBetterCandidate(candidate, bestCandidate, preferTransparency)) {
+                            bestCandidate = candidate;
+                        }
+
+                        if (doneSteps % 4 === 0) {
+                            await tickUi();
+                        }
+                    }
+                }
+
+                if (bestStrictCandidate) return bestStrictCandidate;
+                if (bestAcceptedCandidate) return bestAcceptedCandidate;
+                return bestCandidate;
+            }
+
+            function renderSolutionToPreview(solution, moduleSize) {
+                drawTriStateMatrixToCanvas(transparentCanvas, solution, moduleSize);
+                composePreviewFrom(transparentCanvas, '#ffffff', whitePreviewCanvas);
+                composePreviewFrom(transparentCanvas, '#000000', blackPreviewCanvas);
+            }
+
+            async function generate() {
+                const payloadA = (payloadAEl.value || '').trim();
+                const payloadB = (payloadBEl.value || '').trim();
+                const ecc = eccEl.value || 'M';
+                const version = clampInt(versionEl.value, 0, 40, 0);
+                const moduleSize = clampInt(moduleSizeEl.value, 2, 30, 8);
+                const preferTransparency = !!(maximizeTransparentEl && maximizeTransparentEl.checked);
+                const useGf2Optimization = !!(gf2OptimizeEl && gf2OptimizeEl.checked);
+
+                if (!payloadA || !payloadB) {
+                    setStatus('请同时填写 A 和 B。', true);
+                    metaEl.textContent = '';
+                    return;
+                }
+
+                generateBtn.disabled = true;
+                downloadBtn.disabled = true;
+                lastGenerated = null;
+
+                setStatus(
+                    preferTransparency
+                        ? '正在搜索可行版本与掩码（透明增强模式）...'
+                        : '正在搜索可行版本与掩码（纯容错率判定）...',
+                    false
+                );
+                setProgress(0, 100, '准备中');
+
+                let solution = await findFeasibleSolution(
+                    payloadA,
+                    payloadB,
+                    ecc,
+                    version,
+                    preferTransparency,
+                    function (done, total, label) {
+                        setProgress(done, total, label);
+                    }
+                );
+
+                if (!solution) {
+                    setStatus('没有可搜索候选（可能是输入超出容量）。', true);
+                    metaEl.textContent = '';
+                    setProgress(100, 100, '完成');
+                    generateBtn.disabled = false;
+                    return;
+                }
+
+                if (useGf2Optimization) {
+                    setStatus('已找到基础候选，正在建立 GF(2) 影响矩阵并求解约束...', false);
+                    solution = await optimizeCandidateGF2(
+                        solution,
+                        payloadA,
+                        payloadB,
+                        ecc,
+                        function (done, total, label) {
+                            setProgress(done, total, label);
+                        }
+                    );
+                }
+
+                renderSolutionToPreview(solution, moduleSize);
+
+                if (solution.accepted) {
+                    lastGenerated = solution;
+                    downloadBtn.disabled = false;
+                    if (solution.violations === 0) {
+                        setStatus('生成成功：严格满足 Dark(B) ⊇ Dark(A)。', false);
+                    } else {
+                        setStatus('生成成功：不匹配位在容错率范围内。', false);
+                    }
+                } else {
+                    setStatus('未通过：不匹配位超过容错率阈值，已展示最佳候选。', true);
+                }
+
+                const gfMeta = solution.gfStats
+                    ? `, GF2(vars=${solution.gfStats.variables}, rank=${solution.gfStats.rank}, rounds=${solution.gfStats.iterations}, mismatch=${solution.gfStats.initialViolations}->${solution.violations})`
+                    : '';
+                metaEl.textContent =
+                    `version=${solution.version}, mask=${solution.mask}, modules=${solution.count}x${solution.count}, Bdark=${solution.bDarkModules}, transparent=${solution.transparentModules}, transRatio=${solution.transparencyRatio.toFixed(3)}, mismatch=${solution.violations}/${solution.allowedViolations}${gfMeta}`;
+
+                setProgress(100, 100, '完成');
+                generateBtn.disabled = false;
+            }
+
+            function downloadPng() {
+                if (!lastGenerated) {
+                    setStatus('当前结果未通过可接受判定，不能下载。', true);
+                    return;
+                }
+                transparentCanvas.toBlob(function (blob) {
+                    if (!blob) {
+                        setStatus('下载失败：无法导出 PNG。', true);
+                        return;
+                    }
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'dual-transparent-qr.png';
+                    a.click();
+                    setTimeout(function () {
+                        URL.revokeObjectURL(url);
+                    }, 600);
+                }, 'image/png');
+            }
+
+            generateBtn.addEventListener('click', generate);
+            downloadBtn.addEventListener('click', downloadPng);
+
+            downloadBtn.disabled = true;
+            payloadAEl.value = 'https://example.com/A';
+            payloadBEl.value = 'https://example.com/B';
+            generate();
+        })();
+    </script>
+</body>
+</html>

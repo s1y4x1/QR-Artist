@@ -552,8 +552,15 @@ function doesFrameTouchEcRegion(imageSource) {
             const cx = qrStartX + (c + qrMargin) * moduleW + (moduleW / 2);
             const cy = qrStartY + (r + qrMargin) * moduleH + (moduleH / 2);
 
-            const localX = Math.floor(((cx - imageBoxX) / imageBoxW) * sourceW);
-            const localY = Math.floor(((cy - imageBoxY) / imageBoxH) * sourceH);
+            const mapped = getSampledImageCoords(
+                cx,
+                cy,
+                { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                sourceW,
+                sourceH
+            );
+            const localX = Math.floor(mapped.lx);
+            const localY = Math.floor(mapped.ly);
             if (localX < 0 || localY < 0 || localX >= sourceW || localY >= sourceH) continue;
 
             const idx = (localY * sourceW + localX) * 4;
@@ -822,8 +829,10 @@ function getAnimatedArtCacheKey() {
         bgTransparency: backgroundTransparency,
         fgAutoLuminance: !!(fgAutoLuminanceCb && fgAutoLuminanceCb.checked),
         bgAutoLuminance: !!(bgAutoLuminanceCb && bgAutoLuminanceCb.checked),
-        moduleScale: moduleScalePercent,
+moduleScale: moduleScalePercent,
         coveredModuleScale: coveredModuleScalePercent,
+        qrRot: qrRotationDeg,
+        imgRot: imageRotationDeg,
         darkLuminanceLimit,
         lightLuminanceLimit,
         art: !!(artisticModeCb && artisticModeCb.checked),
@@ -1104,6 +1113,11 @@ let hasImageUpload = false;
 let arrowMovePending = false;
 let pendingLiveDrawRender = false;
 let lastWhitenMode = 'none'; // 'white', 'black', 'none'
+let whitenLocked = false;
+let applyingWhitenLock = false;
+let whitenLongPressTimer = null;
+let whitenWasLongPress = false;
+let outerMarginPx = 0;
 let gifPreviewTimer = null;
 let gifPreviewRunning = false;
 let gifPreviewIndex = 0;
@@ -1242,6 +1256,15 @@ const imageSizeGroup = document.getElementById('image-size-group');
 const imageSizeWInput = document.getElementById('img-size-w');
 const imageSizeHInput = document.getElementById('img-size-h');
 const imageSizeResetBtn = document.getElementById('img-size-reset-btn');
+const qrRotationRange = document.getElementById('qr-rotation-range');
+const qrRotationValue = document.getElementById('qr-rotation-value');
+const imageRotationRange = document.getElementById('image-rotation-range');
+const imageRotationValue = document.getElementById('image-rotation-value');
+const outerMarginValue = document.getElementById('outer-margin-value');
+const outerMarginGroup = document.getElementById('outer-margin-group');
+const rotationGroup = document.getElementById('rotation-group');
+const qrRotationRow = document.getElementById('qr-rotation-row');
+const imageRotationRow = document.getElementById('image-rotation-row');
 
 let CELL_SIZE = 8;
 let qrMargin = 1;
@@ -1250,6 +1273,8 @@ let moduleScalePercent = 100;
 let coveredModuleScalePercent = 50;
 let finderStyle = 'classic';
 let alignStyle = 'classic';
+let qrRotationDeg = 0;
+let imageRotationDeg = 0;
 let lastNonBasisImportRect = null;
 let lastBasisImportRect = null;
 let basisImageWidth = 0;
@@ -1269,6 +1294,31 @@ let animatedFrameProgressContext = null;
 
 function isImageBasisMode() {
     return !!(imageBasisCb && !imageBasisCb.disabled && imageBasisCb.checked && hasImageUpload);
+}
+
+function updateRotationAndMarginPanel() {
+    const hasImg = !!hasImageUpload;
+    if (!hasImg) {
+        if (outerMarginGroup) outerMarginGroup.style.display = '';
+        if (rotationGroup) rotationGroup.style.display = 'none';
+        return;
+    }
+    if (outerMarginGroup) outerMarginGroup.style.display = 'none';
+    if (rotationGroup) rotationGroup.style.display = '';
+    const basis = isImageBasisMode();
+    if (qrRotationRow) qrRotationRow.style.display = basis ? '' : 'none';
+    if (imageRotationRow) imageRotationRow.style.display = basis ? 'none' : '';
+}
+
+function updateWhitenBtnUI() {
+    if (!whitenBtn) return;
+    const isBlack = lastWhitenMode === 'black';
+    whitenBtn.textContent = isBlack ? '🌙' : '☀️';
+    const action = isBlack ? '全黑' : '全白';
+    whitenBtn.title = whitenLocked
+        ? `已锁定「一键${action}」：任何更改后自动执行，长按解锁`
+        : `一键${action}（点击切换颜色，长按锁定）`;
+    whitenBtn.classList.toggle('locked', whitenLocked);
 }
 
 function getSourceDimensions(imageSource = previewImg) {
@@ -1828,6 +1878,101 @@ function getBasisQrBoxInternal() {
     };
 }
 
+function normalizeAngleDeg(value) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return 0;
+    return ((v % 360) + 360) % 360;
+}
+
+function getRotationRad(deg) {
+    return (normalizeAngleDeg(deg) * Math.PI) / 180;
+}
+
+// Map a module point (canvas coords, unrotated QR grid space) to the image-local
+// coordinates to sample, depending on the active mode:
+//  - image-basis mode: the QR rotates over the unrotated image, so forward-rotate
+//    the point around the QR box center (image fills the canvas, 1:1 mapping).
+//  - normal mode: the image rotates around its box center, so apply the inverse
+//    image rotation.
+function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH) {
+    if (isImageBasisMode()) {
+        const rad = getRotationRad(qrRotationDeg);
+        if (rad === 0) return { lx: cx, ly: cy };
+        const box = getBasisQrBoxInternal();
+        const qcx = box.x + box.width / 2;
+        const qcy = box.y + box.height / 2;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        return {
+            lx: qcx + cos * (cx - qcx) - sin * (cy - qcy),
+            ly: qcy + sin * (cx - qcx) + cos * (cy - qcy)
+        };
+    }
+    return getRotatedImageLocalCoords(cx, cy, imageBox, imageRotationDeg, sourceW, sourceH);
+}
+
+// Map a canvas-space point to image-local coordinates, taking the image
+// rotation (around the image box center) into account.
+function getRotatedImageLocalCoords(px, py, box, rotDeg, sourceW, sourceH) {
+    const rad = getRotationRad(rotDeg);
+    const bw = Math.max(1, box.width);
+    const bh = Math.max(1, box.height);
+    if (rad === 0) {
+        return {
+            lx: ((px - box.x) / bw) * sourceW,
+            ly: ((py - box.y) / bh) * sourceH
+        };
+    }
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = box.x + bw / 2;
+    const cy = box.y + bh / 2;
+    const dx = cos * (px - cx) + sin * (py - cy);
+    const dy = -sin * (px - cx) + cos * (py - cy);
+    return {
+        lx: ((dx + bw / 2) / bw) * sourceW,
+        ly: ((dy + bh / 2) / bh) * sourceH
+    };
+}
+
+function setQrRotationDeg(value, shouldRender = true) {
+    const v = Number(value);
+    qrRotationDeg = Number.isFinite(v) ? v : 0;
+    if (qrRotationRange) qrRotationRange.value = String(normalizeAngleDeg(qrRotationDeg));
+    if (qrRotationValue) qrRotationValue.value = String(qrRotationDeg);
+    if (shouldRender) {
+        invalidateAnimatedArtCache();
+        renderQR(false);
+    }
+}
+
+function setImageRotationDeg(value, shouldRender = true) {
+    const v = Number(value);
+    imageRotationDeg = Number.isFinite(v) ? v : 0;
+    if (imageRotationRange) imageRotationRange.value = String(normalizeAngleDeg(imageRotationDeg));
+    if (imageRotationValue) imageRotationValue.value = String(imageRotationDeg);
+    if (shouldRender) {
+        invalidateAnimatedArtCache();
+        renderQR(false);
+    }
+}
+
+function drawRotatedImageBox(drawCtx, boxX, boxY, boxW, boxH, rotDeg, drawFn) {
+    const rad = getRotationRad(rotDeg);
+    if (rad === 0) {
+        drawFn();
+        return;
+    }
+    const cx = boxX + boxW / 2;
+    const cy = boxY + boxH / 2;
+    drawCtx.save();
+    drawCtx.translate(cx, cy);
+    drawCtx.rotate(rad);
+    drawCtx.translate(-cx, -cy);
+    drawFn();
+    drawCtx.restore();
+}
+
 function initImportOverlayByMode(natW, natH) {
     const wrapperRect = canvasWrapper.getBoundingClientRect();
     const viewW = wrapperRect.width;
@@ -1968,6 +2113,7 @@ function clearDeleteZones() {
 function init() {
     // Determine initial version if auto
     updateQR();
+    updateRotationAndMarginPanel();
 
     if (embedImageCb) {
         embedImageCb.disabled = true;
@@ -2001,8 +2147,51 @@ function init() {
             });
         }
     };
-    bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
+bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
     bindScaleControl(coveredModuleScaleRange, coveredModuleScaleValue, setCoveredModuleScalePercent);
+
+    const bindRotationControl = (range, numberInput, setter) => {
+        const commit = () => {
+            invalidateAnimatedArtCache();
+            renderQR(false);
+        };
+        if (range) {
+            range.addEventListener('input', () => {
+                setter(range.value, false);
+                commit();
+            });
+        }
+        if (numberInput) {
+            numberInput.addEventListener('input', () => {
+                if (numberInput.value === '') return;
+                setter(numberInput.value, false);
+                commit();
+            });
+            numberInput.addEventListener('change', () => {
+                setter(numberInput.value === '' ? (range ? range.value : 0) : numberInput.value, false);
+                commit();
+            });
+        }
+    };
+    bindRotationControl(qrRotationRange, qrRotationValue, setQrRotationDeg);
+    bindRotationControl(imageRotationRange, imageRotationValue, setImageRotationDeg);
+
+    const setOuterMargin = (value) => {
+        const v = Math.max(0, Math.round(Number(value) || 0));
+        outerMarginPx = Number.isFinite(v) ? v : 0;
+        if (outerMarginValue) outerMarginValue.value = String(outerMarginPx);
+        invalidateAnimatedArtCache();
+        renderQR(false);
+    };
+    if (outerMarginValue) {
+        outerMarginValue.addEventListener('input', () => {
+            if (outerMarginValue.value === '') return;
+            setOuterMargin(outerMarginValue.value);
+        });
+        outerMarginValue.addEventListener('change', () => {
+            setOuterMargin(outerMarginValue.value === '' ? 0 : outerMarginValue.value);
+        });
+    }
 
     const bindTransparencyControl = (range, numberInput, autoCb, isForeground) => {
         const setTransparency = (value) => {
@@ -2578,44 +2767,60 @@ function init() {
         maskPattern = -1;
         refreshImageSizeControlVisibility();
         updateMaskControls();
+        updateRotationAndMarginPanel();
 
         updateQR();
         saveHistory(); // Save the cleared state
     });
-    whitenBtn.addEventListener('click', () => {
+    whitenBtn.addEventListener('click', (e) => {
+        if (whitenWasLongPress) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            whitenWasLongPress = false;
+            return;
+        }
+        whitenWasLongPress = false;
         // Toggle Logic
         let targetColor = 0; // White
         if (lastWhitenMode === 'white') {
-             targetColor = 1; // Black
-             lastWhitenMode = 'black';
-               whitenBtn.title = "再次点击一键全白";
+            targetColor = 1; // Black
+            lastWhitenMode = 'black';
         } else {
-             targetColor = 0; // White
-             lastWhitenMode = 'white';
-               whitenBtn.title = "再次点击一键全黑";
+            targetColor = 0; // White
+            lastWhitenMode = 'white';
         }
-
-        // Fix logic stability:
-        // If "Auto Mask" is active, modifying data to be visually uniform (White/Black)
-        // will cause the Auto-Penalty algorithm to choose a mask that scambles it.
-        // We MUST LOCK the mask to the current visual mask to preserve the user's intent.
-        if (maskPattern === -1) {
-            // Use the last calculated mask (real), or fallback to 0
-            const bestMask = (lastState.mask >= 0) ? lastState.mask : 0;
-            maskPattern = bestMask;
-            
-            // Sync UI
-            updateMaskControls();
-        }
-
-        hasUserEdits = true;
-        lockAutoMaskIfNeeded();
-        setSuffixUniform(targetColor);
-        drawnPixels.clear(); // Clear manual edits blocking the fill
-        
-        updateQR();
-        saveHistory(); 
+        updateWhitenBtnUI();
+        performWhitenFill(targetColor, true);
     });
+
+    // Long-press: toggle lock (lock on first hold, unlock on next hold).
+    whitenBtn.addEventListener('pointerdown', () => {
+        whitenWasLongPress = false;
+        clearTimeout(whitenLongPressTimer);
+        whitenLongPressTimer = setTimeout(() => {
+            whitenWasLongPress = true;
+            // A fresh page starts with lastWhitenMode === 'none'. Locking must
+            // normalize to a real color (matching the displayed ☀️/白) so the
+            // lock is actually effective.
+            if (lastWhitenMode === 'none') lastWhitenMode = 'white';
+            const wasLocked = whitenLocked;
+            whitenLocked = !whitenLocked;
+            updateWhitenBtnUI();
+            // Locking on: apply the locked fill once immediately, so the state
+            // matches the "已锁定「一键全白/黑」" label right away.
+            if (whitenLocked && !wasLocked) {
+                performWhitenFill(lastWhitenMode === 'black' ? 1 : 0, false);
+            }
+        }, 500);
+    });
+    whitenBtn.addEventListener('pointerup', () => {
+        clearTimeout(whitenLongPressTimer);
+    });
+    whitenBtn.addEventListener('pointerleave', () => {
+        clearTimeout(whitenLongPressTimer);
+    });
+
+    updateWhitenBtnUI();
     downloadBtn.addEventListener('click', async () => {
         await exportAndDownload();
     });
@@ -3798,8 +4003,15 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     const targetAt = (r, c) => {
         const cx = qrStartX + (c + qrMargin) * moduleW + moduleW / 2;
         const cy = qrStartY + (r + qrMargin) * moduleH + moduleH / 2;
-        const localX = Math.floor(((cx - imageBoxX) / imageBoxW) * src.width);
-        const localY = Math.floor(((cy - imageBoxY) / imageBoxH) * src.height);
+        const mapped = getSampledImageCoords(
+            cx,
+            cy,
+            { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+            src.width,
+            src.height
+        );
+        const localX = Math.floor(mapped.lx);
+        const localY = Math.floor(mapped.ly);
         if (localX < 0 || localX >= src.width || localY < 0 || localY >= src.height) return null;
         const idx = (localY * src.width + localX) * 4;
         const rr = imgData[idx];
@@ -3828,6 +4040,7 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     const ecTargetsByBlock = new Map();
     const editableBitCoord = new Map();
     const count = generatedQR.getModuleCount();
+
     for (let r = 0; r < count; r++) {
         for (let c = 0; c < count; c++) {
             const cell = pixelMap[r] ? pixelMap[r][c] : null;
@@ -4628,8 +4841,15 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                  if (checkCoverage && imgData) {
                      const modCX = qrStartX + (c + qrMargin) * moduleW + moduleW / 2;
                      const modCY = qrStartY + (r + qrMargin) * moduleH + moduleH / 2;
-                            const ix = Math.floor(((modCX - imageBoxX) / imageBoxW) * sourceW);
-                            const iy = Math.floor(((modCY - imageBoxY) / imageBoxH) * sourceH);
+                     const mapped = getSampledImageCoords(
+                         modCX,
+                         modCY,
+                         { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                         sourceW,
+                         sourceH
+                     );
+                     const ix = Math.floor(mapped.lx);
+                     const iy = Math.floor(mapped.ly);
 
                      if (ix >= 0 && iy >= 0 && ix < imgData.width && iy < imgData.height) {
                              const idx = (iy * imgData.width + ix) * 4;
@@ -4671,6 +4891,24 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
             }
         }
     }
+}
+
+function performWhitenFill(targetColor, shouldSaveHistory) {
+    // Fix logic stability:
+    // If "Auto Mask" is active, modifying data to be visually uniform (White/Black)
+    // will cause the Auto-Penalty algorithm to choose a mask that scambles it.
+    // We MUST LOCK the mask to the current visual mask to preserve the user's intent.
+    if (maskPattern === -1) {
+        const bestMask = (lastState.mask >= 0) ? lastState.mask : 0;
+        maskPattern = bestMask;
+        lastManualMask = bestMask;
+        updateMaskControls();
+    }
+    hasUserEdits = true;
+    setSuffixUniform(targetColor);
+    drawnPixels.clear(); // Clear manual edits blocking the fill
+    updateQR();
+    if (shouldSaveHistory) saveHistory();
 }
 
 function stringToUtf8ByteArray(str) {
@@ -4875,6 +5113,28 @@ async function updateQR(options = {}) {
     const capacityBytes = totalDataBits / 8;
     if (currentSuffixBytes.length !== capacityBytes) {
         currentSuffixBytes = new Array(capacityBytes).fill(32); // fill space
+    }
+
+    // While whiten-lock is active, apply the locked uniform fill BEFORE any
+    // computation (e.g. EC-region fitting) so the solve runs on the filled
+    // suffix instead of wasting work on the pre-fill data.
+    if (whitenLocked && !applyingWhitenLock) {
+        applyingWhitenLock = true;
+        try {
+            if (lastWhitenMode === 'white' || lastWhitenMode === 'black') {
+                if (maskPattern === -1) {
+                    const bestMask = (lastState.mask >= 0) ? lastState.mask : 0;
+                    maskPattern = bestMask;
+                    lastManualMask = bestMask;
+                    updateMaskControls();
+                }
+                hasUserEdits = true;
+                setSuffixUniform(lastWhitenMode === 'white' ? 0 : 1);
+                drawnPixels.clear();
+            }
+        } finally {
+            applyingWhitenLock = false;
+        }
     }
 
     // Helper to write bits to buffer
@@ -5121,6 +5381,10 @@ function renderQR(isExport, imageOverride) {
         // In image-basis mode, keep image pixel size fixed.
         canvasW = Math.max(1, Math.round(basisImageWidth || srcDim.width));
         canvasH = Math.max(1, Math.round(basisImageHeight || srcDim.height));
+    } else if (!imageReady && outerMarginPx > 0) {
+        // No image uploaded: wrap the QR with an outer margin (px) on each side.
+        canvasW = baseSize + 2 * outerMarginPx;
+        canvasH = baseSize + 2 * outerMarginPx;
     }
 
     canvas.width = canvasW;
@@ -5166,17 +5430,23 @@ function renderQR(isExport, imageOverride) {
                 imgDrawH = box.height;
             }
 
+            // In image-basis mode the image is not rotated (only the QR rotates).
+            const imageRotDeg = basisMode ? 0 : imageRotationDeg;
             const offCan = document.createElement('canvas');
             offCan.width = canvas.width;
             offCan.height = canvas.height;
             const offCtx = offCan.getContext('2d', { willReadFrequently: true });
             offCtx.clearRect(0, 0, offCan.width, offCan.height);
-            offCtx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+            drawRotatedImageBox(offCtx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
+                offCtx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+            });
             offData = offCtx.getImageData(0, 0, canvas.width, canvas.height).data;
 
             const shouldDrawBg = basisMode || embedImage;
             if (shouldDrawBg) {
-                ctx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+                drawRotatedImageBox(ctx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
+                    ctx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+                });
             }
             bgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         } catch (e) {
@@ -5194,6 +5464,12 @@ function renderQR(isExport, imageOverride) {
         qrOriginY = box.y;
         qrW = Math.max(1, box.width);
         qrH = Math.max(1, box.height);
+    } else if (!imageReady && outerMarginPx > 0) {
+        // No image uploaded: inset the QR box by the outer margin.
+        qrOriginX = outerMarginPx;
+        qrOriginY = outerMarginPx;
+        qrW = baseSize;
+        qrH = baseSize;
     }
 
     const moduleW = qrW / (count + 2 * qrMargin);
@@ -5211,17 +5487,37 @@ function renderQR(isExport, imageOverride) {
             return { coverage: 0, lum: 0.5, transparent: true };
         }
 
-        const sampleCols = 8;
+const sampleCols = 8;
         const sampleRows = 8;
         let total = 0;
         let opaque = 0;
         let lumSum = 0;
 
+        // In image-basis mode the QR rotates on top of the unrotated image,
+        // so sample the image pixels covered by the rotated module.
+        const qrRotSampling = basisMode ? getRotationRad(qrRotationDeg) : 0;
+        const qcX = qrOriginX + qrW / 2;
+        const qcY = qrOriginY + qrH / 2;
+        const rotCos = Math.cos(qrRotSampling);
+        const rotSin = Math.sin(qrRotSampling);
+
         for (let sy = 0; sy < sampleRows; sy++) {
             const py = Math.min(y1, Math.max(y0, Math.round(y0 + ((sy + 0.5) * (y1 - y0 + 1) / sampleRows) - 0.5)));
             for (let sx = 0; sx < sampleCols; sx++) {
-                const px = Math.min(x1, Math.max(x0, Math.round(x0 + ((sx + 0.5) * (x1 - x0 + 1) / sampleCols) - 0.5)));
-                const idx = (py * canvas.width + px) * 4;
+                const px0 = Math.min(x1, Math.max(x0, Math.round(x0 + ((sx + 0.5) * (x1 - x0 + 1) / sampleCols) - 0.5)));
+                let px = px0;
+                let ry = py;
+                if (qrRotSampling !== 0) {
+                    const dx = rotCos * (px0 - qcX) - rotSin * (py - qcY);
+                    const dy = rotSin * (px0 - qcX) + rotCos * (py - qcY);
+                    px = qcX + dx;
+                    ry = qcY + dy;
+                }
+                if (px < 0 || ry < 0 || px >= canvas.width || ry >= canvas.height) {
+                    total += 1;
+                    continue;
+                }
+                const idx = (ry * canvas.width + px) * 4;
                 total += 1;
                 const alpha = offData[idx + 3];
                 if (alpha > 10) {
@@ -5316,8 +5612,20 @@ function renderQR(isExport, imageOverride) {
         upLeft: r > 0 && c > 0 && finalDark[r - 1][c - 1] === isDark && finalStyle[r - 1][c - 1] === 'liquid',
         upRight: r > 0 && c < count - 1 && finalDark[r - 1][c + 1] === isDark && finalStyle[r - 1][c + 1] === 'liquid',
         downLeft: r < count - 1 && c > 0 && finalDark[r + 1][c - 1] === isDark && finalStyle[r + 1][c - 1] === 'liquid',
-        downRight: r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] === isDark && finalStyle[r + 1][c + 1] === 'liquid'
+downRight: r < count - 1 && c < count - 1 && finalDark[r + 1][c + 1] === isDark && finalStyle[r + 1][c + 1] === 'liquid'
     });
+
+    // QR rotation is only applied in image-basis mode (image rotation is hidden there).
+    const qrRotRad = basisMode ? getRotationRad(qrRotationDeg) : 0;
+
+    ctx.save();
+    if (qrRotRad !== 0) {
+        const qcX = qrOriginX + qrW / 2;
+        const qcY = qrOriginY + qrH / 2;
+        ctx.translate(qcX, qcY);
+        ctx.rotate(qrRotRad);
+        ctx.translate(-qcX, -qcY);
+    }
 
     for (let r = 0; r < count; r++) {
         for (let c = 0; c < count; c++) {
@@ -5476,6 +5784,8 @@ function renderQR(isExport, imageOverride) {
             alignStyle === 'circle' && emphasizeAlignRegion
         );
     }
+
+    ctx.restore();
 }
 
 function startDraw(e) {
@@ -5506,9 +5816,13 @@ function getMapCoord(e) {
     
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
-    
-    const c = Math.floor(x/CELL_SIZE) - qrMargin;
-    const r = Math.floor(y/CELL_SIZE) - qrMargin;
+
+    // When no image is uploaded, the QR is inset by the outer margin.
+    const originX = hasImageUpload ? 0 : outerMarginPx;
+    const originY = hasImageUpload ? 0 : outerMarginPx;
+
+    const c = Math.floor((x - originX)/CELL_SIZE) - qrMargin;
+    const r = Math.floor((y - originY)/CELL_SIZE) - qrMargin;
     return { r, c };
 }
 
@@ -6631,6 +6945,7 @@ async function handleImageUpload(e) {
         basisImageWidth = previewImg.naturalWidth || previewImg.width || 0;
         basisImageHeight = previewImg.naturalHeight || previewImg.height || 0;
         refreshImageSizeControlVisibility();
+        updateRotationAndMarginPanel();
         lockAutoMaskIfNeeded();
         
         startImportMode(previewImg.naturalWidth, previewImg.naturalHeight);
@@ -6693,6 +7008,8 @@ function updateOverlayVisibility() {
     } else {
         ov.style.display = 'none';
     }
+
+    updateRotationAndMarginPanel();
 }
 
 function getImageRect() {
@@ -6787,11 +7104,12 @@ function clearImportedImage() {
         videoElement: null,
         firstFrameUrl: null
     };
-    animatedArtCache = null;
+animatedArtCache = null;
     hasImageUpload = false;
     setCoveredModuleScalePercent(50, false);
     setImageColorOptionsVisible(false);
     refreshImageSizeControlVisibility();
+    updateRotationAndMarginPanel();
     stopGifPreview();
     if (embedImageCb) {
         embedImageCb.checked = false;
@@ -7120,8 +7438,15 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
                 let localX = -1;
                 let localY = -1;
 
-                localX = Math.floor(((cx - imageBoxX) / imageBoxW) * sourceW);
-                localY = Math.floor(((cy - imageBoxY) / imageBoxH) * sourceH);
+                const mapped = getSampledImageCoords(
+                    cx,
+                    cy,
+                    { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                    sourceW,
+                    sourceH
+                );
+                localX = Math.floor(mapped.lx);
+                localY = Math.floor(mapped.ly);
 
                 if (localX >= 0 && localX < sourceW && localY >= 0 && localY < sourceH) {
                     const idx = (localY * sourceW + localX) * 4;
