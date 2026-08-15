@@ -300,8 +300,15 @@ h1 {
 }
 
 .option-dropdown[open] > summary {
-    margin-bottom: 8px;
     color: transparent;
+    /* Collapse the (invisible) label text so「收起」and ▲ sit adjacent instead
+       of being pushed apart by space-between across the whole box. */
+    font-size: 0;
+    justify-content: flex-start;
+}
+
+.option-dropdown[open] > summary::after {
+    margin-left: 6px;
 }
 
 .option-dropdown[open] > summary::before {
@@ -328,6 +335,7 @@ h1 {
     align-items: center;
     column-gap: 10px;
     row-gap: 6px;
+    position: relative;
 }
 
 .compact-dropdown-row > label {
@@ -354,10 +362,26 @@ h1 {
 }
 
 .compact-dropdown-row > .option-dropdown[open] {
-    grid-column: 1 / -1;
-    width: 100%;
-    margin-top: 6px;
-    justify-self: stretch;
+    grid-column: 2;
+    width: max-content;
+    justify-self: end;
+}
+
+/* Keep the「收起」button where the「展开」button was (same label row); the
+   gallery floats below the row spanning its full width instead of pushing the
+   button to the next line. */
+.compact-dropdown-row > .option-dropdown[open] > .style-gallery,
+.compact-dropdown-row > .option-dropdown[open] > .dropdown-panel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 30;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
 }
 
 .text-overflow-warning {

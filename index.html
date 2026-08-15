@@ -244,20 +244,22 @@
                 <label>掩码模式 (Mask):</label>
                 <details class="option-dropdown">
                     <summary id="mask-mode-summary">自动</summary>
-                    <div class="mask-controls">
-                        <button class="mask-btn mask-auto" id="mask-auto-btn" data-mask="-1" type="button">自动（当前：0）</button>
-                        <button class="mask-btn" data-mask="-2" type="button">无（展示掩码前）</button>
-                    </div>
-                    <div class="mask-gallery" id="mask-gallery">
-                        <div class="mask-items">
-                            <button class="mask-item mask-btn" data-mask="0" type="button"><canvas data-mask="0" width="64" height="64"></canvas><div class="mask-formula">0:(i+j)%2=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="1" type="button"><canvas data-mask="1" width="64" height="64"></canvas><div class="mask-formula">1:i%2=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="2" type="button"><canvas data-mask="2" width="64" height="64"></canvas><div class="mask-formula">2:j%3=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="3" type="button"><canvas data-mask="3" width="64" height="64"></canvas><div class="mask-formula">3:(i+j)%3=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="4" type="button"><canvas data-mask="4" width="64" height="64"></canvas><div class="mask-formula">4:(⌊i/2⌋+⌊j/3⌋)%2=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="5" type="button"><canvas data-mask="5" width="64" height="64"></canvas><div class="mask-formula">5:(i*j)%2+(i*j)%3=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="6" type="button"><canvas data-mask="6" width="64" height="64"></canvas><div class="mask-formula">6:((i*j)%2+(i*j)%3)%2=0</div></button>
-                            <button class="mask-item mask-btn" data-mask="7" type="button"><canvas data-mask="7" width="64" height="64"></canvas><div class="mask-formula">7:((i*j)%3+(i+j)%2)%2=0</div></button>
+                    <div class="dropdown-panel">
+                        <div class="mask-controls">
+                            <button class="mask-btn mask-auto" id="mask-auto-btn" data-mask="-1" type="button">自动（当前：0）</button>
+                            <button class="mask-btn" data-mask="-2" type="button">无（展示掩码前）</button>
+                        </div>
+                        <div class="mask-gallery" id="mask-gallery">
+                            <div class="mask-items">
+                                <button class="mask-item mask-btn" data-mask="0" type="button"><canvas data-mask="0" width="64" height="64"></canvas><div class="mask-formula">0:(i+j)%2=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="1" type="button"><canvas data-mask="1" width="64" height="64"></canvas><div class="mask-formula">1:i%2=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="2" type="button"><canvas data-mask="2" width="64" height="64"></canvas><div class="mask-formula">2:j%3=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="3" type="button"><canvas data-mask="3" width="64" height="64"></canvas><div class="mask-formula">3:(i+j)%3=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="4" type="button"><canvas data-mask="4" width="64" height="64"></canvas><div class="mask-formula">4:(⌊i/2⌋+⌊j/3⌋)%2=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="5" type="button"><canvas data-mask="5" width="64" height="64"></canvas><div class="mask-formula">5:(i*j)%2+(i*j)%3=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="6" type="button"><canvas data-mask="6" width="64" height="64"></canvas><div class="mask-formula">6:((i*j)%2+(i*j)%3)%2=0</div></button>
+                                <button class="mask-item mask-btn" data-mask="7" type="button"><canvas data-mask="7" width="64" height="64"></canvas><div class="mask-formula">7:((i*j)%3+(i+j)%2)%2=0</div></button>
+                            </div>
                         </div>
                     </div>
                 </details>
