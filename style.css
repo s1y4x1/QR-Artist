@@ -288,7 +288,7 @@ h1 {
     content: '▼';
     font-size: 11px;
     color: #6b7280;
-    margin-left: 10px;
+    margin-left: 6px;
 }
 
 .option-dropdown[open] > summary::after {
@@ -305,10 +305,6 @@ h1 {
        of being pushed apart by space-between across the whole box. */
     font-size: 0;
     justify-content: flex-start;
-}
-
-.option-dropdown[open] > summary::after {
-    margin-left: 6px;
 }
 
 .option-dropdown[open] > summary::before {
