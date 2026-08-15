@@ -5524,6 +5524,10 @@ const sampleCols = 8;
                     px = qcX + dx;
                     ry = qcY + dy;
                 }
+                // Rotated sample positions are fractional; round to the nearest
+                // pixel so the array lookup reads a valid color channel.
+                px = Math.round(px);
+                ry = Math.round(ry);
                 if (px < 0 || ry < 0 || px >= canvas.width || ry >= canvas.height) {
                     total += 1;
                     continue;
@@ -7520,7 +7524,102 @@ function processImage(img) {
     // Legacy support removed, now uses Overlay Flow
 }
 
+// When the page is reopened, the browser repopulates the form controls with the
+// values from the previous session (without firing input/change events), so the
+// app state keeps its defaults while the UI shows the old values. Re-read the
+// control values here and push them into the state so what is shown actually
+// takes effect.
+async function reconcileRestoredFormState() {
+    let changed = false;
+    const track = (current, next) => {
+        if (String(current) !== String(next)) changed = true;
+        return next;
+    };
+
+    if (textInput) userText = track(userText, textInput.value);
+    if (eccSelect) eccLevel = track(eccLevel, eccSelect.value);
+    if (encodingSelect) encodingMode = track(encodingMode, encodingSelect.value);
+
+    if (verRange) {
+        const v = Math.max(0, Math.min(40, parseInt(verRange.value, 10) || 0));
+        version = track(version, v);
+        const vInput = document.getElementById('version-input');
+        if (vInput && String(vInput.value) !== String(version)) vInput.value = String(version);
+    }
+
+    if (moduleStyleSelect) moduleStyle = track(moduleStyle, moduleStyleSelect.value);
+    if (finderStyleSelect) finderStyle = track(finderStyle, finderStyleSelect.value);
+    if (alignmentStyleSelect) alignStyle = track(alignStyle, alignmentStyleSelect.value);
+
+    if (fgColorInput) foregroundColor = track(foregroundColor, fgColorInput.value);
+    if (bgColorInput) backgroundColor = track(backgroundColor, bgColorInput.value);
+
+    const restoredCellSizeInput = document.getElementById('cell-size-input');
+    if (restoredCellSizeInput) {
+        const v = parseFloat(restoredCellSizeInput.value);
+        if (Number.isFinite(v) && v > 0 && Math.abs(v - CELL_SIZE) >= 0.05) {
+            CELL_SIZE = Math.round(Math.max(0.1, Math.min(100, v)) * 10) / 10;
+            changed = true;
+        }
+    }
+
+    if (moduleScaleRange) {
+        const v = Math.max(0, Math.min(100, Math.round(Number(moduleScaleRange.value) || 0)));
+        if (v !== moduleScalePercent) { setModuleScalePercent(v, false); changed = true; }
+    }
+    if (coveredModuleScaleRange) {
+        const v = Math.max(0, Math.min(100, Math.round(Number(coveredModuleScaleRange.value) || 0)));
+        if (v !== coveredModuleScalePercent) { setCoveredModuleScalePercent(v, false); changed = true; }
+    }
+    if (qrRotationRange) {
+        const v = Number(qrRotationRange.value);
+        if (Number.isFinite(v) && normalizeAngleDeg(v) !== normalizeAngleDeg(qrRotationDeg)) { setQrRotationDeg(v, false); changed = true; }
+    }
+    if (imageRotationRange) {
+        const v = Number(imageRotationRange.value);
+        if (Number.isFinite(v) && normalizeAngleDeg(v) !== normalizeAngleDeg(imageRotationDeg)) { setImageRotationDeg(v, false); changed = true; }
+    }
+    if (outerMarginValue) {
+        const v = Math.max(0, Math.round(Number(outerMarginValue.value) || 0));
+        if (v !== outerMarginPx) { outerMarginPx = v; changed = true; }
+    }
+    if (fgTransparencyRange) {
+        const v = Math.round(Math.max(0, Math.min(100, Number(fgTransparencyRange.value) || 0)));
+        if (v !== foregroundTransparency) { foregroundTransparency = v; changed = true; }
+    }
+    if (bgTransparencyRange) {
+        const v = Math.round(Math.max(0, Math.min(100, Number(bgTransparencyRange.value) || 0)));
+        if (v !== backgroundTransparency) { backgroundTransparency = v; changed = true; }
+    }
+    if (fgAutoThresholdRange) {
+        const v = Math.max(0, Math.min(100, Math.round(Number(fgAutoThresholdRange.value) || 0)));
+        const cur = isToneInverted() ? lightLuminanceLimit : darkLuminanceLimit;
+        if (v !== cur) { setAutoLuminanceThresholdForColor(true, v, false); changed = true; }
+    }
+    if (bgAutoThresholdRange) {
+        const v = Math.max(0, Math.min(100, Math.round(Number(bgAutoThresholdRange.value) || 0)));
+        const cur = isToneInverted() ? darkLuminanceLimit : lightLuminanceLimit;
+        if (v !== cur) { setAutoLuminanceThresholdForColor(false, v, false); changed = true; }
+    }
+
+    if (!changed) return;
+
+    syncHexInputs();
+    syncStyleButtonState('module');
+    syncStyleButtonState('finder');
+    syncStyleButtonState('align');
+    updateOptionSummaries();
+    syncAutoLuminanceThresholdControls();
+
+    resetSuffix();
+    await updateQR({ skipArtisticPass: true });
+    renderQR(false);
+}
+
 init();
+window.addEventListener('pageshow', () => {
+    reconcileRestoredFormState();
+});
 // Initial snapshot
 setTimeout(() => {
     if (historyStack.length === 0 && currentSuffixBytes.length > 0) {
