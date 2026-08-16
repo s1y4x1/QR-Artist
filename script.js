@@ -1158,9 +1158,17 @@ const fileInput = document.getElementById('img-upload');
 const importBtn = document.getElementById('import-btn');
 
 // Overlay Elements
-const importOverlay = document.getElementById('import-overlay');
-const previewImg = document.getElementById('preview-img');
+let importOverlay = document.getElementById('import-overlay');
+let previewImg = document.getElementById('preview-img');
 const deleteHintLayer = document.getElementById('delete-hint-layer');
+
+// Multiple image layers: each uploaded image is a layer with its own overlay
+// frame, uploadInfo and importState. The global importState/previewImg/
+// uploadInfo/basisImageWidth/Height always alias the ACTIVE layer so all the
+// single-image code paths operate on whichever layer is selected.
+let imageLayers = [];
+let activeImageIndex = -1;
+let imageLayerSeq = 0;
 
 let importState = {
     active: false,
@@ -1837,11 +1845,13 @@ function syncCellSizeFromBasisBox(moduleCountOverride) {
     if (cellSizeInput) cellSizeInput.value = next.toFixed(1);
 }
 
-function getOverlayInnerBoxInternal(canvasW, canvasH, displayW, displayH) {
+function getOverlayInnerBoxInternal(canvasW, canvasH, displayW, displayH, stateOverride, overlayOverride) {
+    const st = stateOverride || importState;
+    const ov = overlayOverride || importOverlay;
     const offsets = getCanvasContentOffsets();
-    const relX = importState.relX || 0;
-    const relY = importState.relY || 0;
-    const ovStyle = window.getComputedStyle(importOverlay);
+    const relX = st.relX || 0;
+    const relY = st.relY || 0;
+    const ovStyle = window.getComputedStyle(ov);
     const ovBorderLeft = parseFloat(ovStyle.borderLeftWidth) || 0;
     const ovBorderRight = parseFloat(ovStyle.borderRightWidth) || 0;
     const ovBorderTop = parseFloat(ovStyle.borderTopWidth) || 0;
@@ -1852,8 +1862,8 @@ function getOverlayInnerBoxInternal(canvasW, canvasH, displayW, displayH) {
     return {
         x: (relX - offsets.left + ovBorderLeft) * ratioX,
         y: (relY - offsets.top + ovBorderTop) * ratioY,
-        width: Math.max(0, (importState.width - ovBorderLeft - ovBorderRight) * ratioX),
-        height: Math.max(0, (importState.height - ovBorderTop - ovBorderBottom) * ratioY)
+        width: Math.max(0, (st.width - ovBorderLeft - ovBorderRight) * ratioX),
+        height: Math.max(0, (st.height - ovBorderTop - ovBorderBottom) * ratioY)
     };
 }
 
@@ -1893,7 +1903,7 @@ function getRotationRad(deg) {
 //    the point around the QR box center (image fills the canvas, 1:1 mapping).
 //  - normal mode: the image rotates around its box center, so apply the inverse
 //    image rotation.
-function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH) {
+function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH, rotDegOverride) {
     if (isImageBasisMode()) {
         const rad = getRotationRad(qrRotationDeg);
         if (rad === 0) return { lx: cx, ly: cy };
@@ -1907,7 +1917,53 @@ function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH) {
             ly: qcy + sin * (cx - qcx) + cos * (cy - qcy)
         };
     }
-    return getRotatedImageLocalCoords(cx, cy, imageBox, imageRotationDeg, sourceW, sourceH);
+    const rotDeg = rotDegOverride === undefined ? imageRotationDeg : rotDegOverride;
+    return getRotatedImageLocalCoords(cx, cy, imageBox, rotDeg, sourceW, sourceH);
+}
+
+// Composite every layer (bottom-to-top) into a single canvas so the QR can
+// follow the topmost layer's pixels in overlap areas. Each layer is drawn at
+// its own overlay box with its own rotation (image-basis mode keeps images
+// unrotated; the QR rotates instead). frameOverride[i] (optional) supplies a
+// specific frame canvas for layer i instead of its static <img>.
+function buildCompositeCanvas(canvasW, canvasH, frameOverride) {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(canvasW));
+    c.height = Math.max(1, Math.round(canvasH));
+    const cc = c.getContext('2d', { willReadFrequently: true });
+    cc.clearRect(0, 0, c.width, c.height);
+    const displayW = parseFloat(canvas.style.width) || c.width;
+    const displayH = parseFloat(canvas.style.height) || c.height;
+    const basisMode = isImageBasisMode();
+    for (let i = 0; i < imageLayers.length; i++) {
+        const L = imageLayers[i];
+        const st = L.importState;
+        if (!st.active || st.width <= 0 || st.height <= 0) continue;
+        const src = (frameOverride && frameOverride[i]) ? frameOverride[i] : L.img;
+        if (!src) continue;
+        const dim = getSourceDimensions(src);
+        if (dim.width <= 0 || dim.height <= 0) continue;
+        const box = getOverlayInnerBoxInternal(c.width, c.height, displayW, displayH, st, L.overlayEl);
+        if (box.width <= 0 || box.height <= 0) continue;
+        const rot = basisMode ? 0 : (L.imageRotationDeg || 0);
+        drawRotatedImageBox(cc, box.x, box.y, box.width, box.height, rot, () => {
+            cc.drawImage(src, box.x, box.y, box.width, box.height);
+        });
+    }
+    return c;
+}
+
+// True when any layer has an active, loaded image (used to keep the QR image
+// features enabled across multiple layers).
+function hasAnyImageReady() {
+    for (let i = 0; i < imageLayers.length; i++) {
+        const L = imageLayers[i];
+        if (L && L.importState && L.importState.active && L.img && L.img.src) {
+            const dim = getSourceDimensions(L.img);
+            if (dim.width > 0 && dim.height > 0) return true;
+        }
+    }
+    return false;
 }
 
 // Map a canvas-space point to image-local coordinates, taking the image
@@ -1948,6 +2004,9 @@ function setQrRotationDeg(value, shouldRender = true) {
 function setImageRotationDeg(value, shouldRender = true) {
     const v = Number(value);
     imageRotationDeg = Number.isFinite(v) ? v : 0;
+    // Persist to the active layer so each image keeps its own rotation.
+    const L = getActiveLayer();
+    if (L) L.imageRotationDeg = imageRotationDeg;
     if (imageRotationRange) imageRotationRange.value = String(normalizeAngleDeg(imageRotationDeg));
     if (imageRotationValue) imageRotationValue.value = String(imageRotationDeg);
     if (shouldRender) {
@@ -1986,9 +2045,27 @@ function initImportOverlayByMode(natW, natH) {
         importState.x = canvas.offsetLeft + (displayW - importState.width) / 2;
         importState.y = canvas.offsetTop + (displayH - importState.height) / 2;
     } else {
-        const aspect = natW / natH;
-        let initW = viewW * 0.5;
-        let initH = initW / aspect;
+        const aspect = (natW > 0 && natH > 0) ? (natW / natH) : 1;
+        const displayW = parseFloat(canvas.style.width) || canvas.width || viewW;
+        const displayH = parseFloat(canvas.style.height) || canvas.height || viewH;
+        let initW;
+        let initH;
+        if (natW > 0 && natH > 0) {
+            // Fit the image into the QR area: if it fits completely at natural
+            // size, do not scale it; otherwise use the largest scale that lets
+            // it fit completely.
+            if (natW <= displayW && natH <= displayH) {
+                initW = Math.max(20, natW);
+                initH = Math.max(20, natH);
+            } else {
+                const scale = Math.min(1, displayW / natW, displayH / natH);
+                initW = Math.max(20, natW * scale);
+                initH = Math.max(20, initW / aspect);
+            }
+        } else {
+            initW = viewW * 0.5;
+            initH = initW / aspect;
+        }
         importState.width = initW;
         importState.height = initH;
         importState.x = canvasWrapper.scrollLeft + (viewW - initW) / 2;
@@ -2317,6 +2394,7 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
             }
             const toBasis = imageBasisCb.checked;
             if (importState.active && previewImg) {
+                const L = getActiveLayer();
                 if (toBasis) {
                     const natW = previewImg.naturalWidth || previewImg.width || 1;
                     const natH = previewImg.naturalHeight || previewImg.height || 1;
@@ -2324,35 +2402,35 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
                         basisImageWidth = natW;
                         basisImageHeight = natH;
                     }
-                    lastNonBasisImportRect = {
+                    if (L) L.lastNonBasisRect = {
                         width: importState.width,
                         height: importState.height,
                         relX: importState.relX,
                         relY: importState.relY
                     };
-                    lastNonBasisCellSize = CELL_SIZE;
-                    if (lastBasisImportRect) {
-                        importState.width = lastBasisImportRect.width;
-                        importState.height = lastBasisImportRect.height;
-                        importState.relX = lastBasisImportRect.relX;
-                        importState.relY = lastBasisImportRect.relY;
+                    if (L) L.lastNonBasisCell = CELL_SIZE;
+                    if (L && L.lastBasisRect) {
+                        importState.width = L.lastBasisRect.width;
+                        importState.height = L.lastBasisRect.height;
+                        importState.relX = L.lastBasisRect.relX;
+                        importState.relY = L.lastBasisRect.relY;
                         importState.x = canvas.offsetLeft + importState.relX;
                         importState.y = canvas.offsetTop + importState.relY;
                     } else {
                         initImportOverlayByMode(natW, natH);
                     }
                 } else {
-                    lastBasisImportRect = {
+                    if (L) L.lastBasisRect = {
                         width: importState.width,
                         height: importState.height,
                         relX: importState.relX,
                         relY: importState.relY
                     };
-                    if (lastNonBasisImportRect) {
-                        importState.width = lastNonBasisImportRect.width;
-                        importState.height = lastNonBasisImportRect.height;
-                        importState.relX = lastNonBasisImportRect.relX;
-                        importState.relY = lastNonBasisImportRect.relY;
+                    if (L && L.lastNonBasisRect) {
+                        importState.width = L.lastNonBasisRect.width;
+                        importState.height = L.lastNonBasisRect.height;
+                        importState.relX = L.lastNonBasisRect.relX;
+                        importState.relY = L.lastNonBasisRect.relY;
                     } else {
                         const natW = previewImg.naturalWidth || previewImg.width || 1;
                         const natH = previewImg.naturalHeight || previewImg.height || 1;
@@ -2365,9 +2443,9 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
                     }
                     importState.x = canvas.offsetLeft + importState.relX;
                     importState.y = canvas.offsetTop + importState.relY;
-                    if (lastNonBasisCellSize != null) {
-                        CELL_SIZE = lastNonBasisCellSize;
-                        lastNonBasisCellSize = null;
+                    if (L && L.lastNonBasisCell != null) {
+                        CELL_SIZE = L.lastNonBasisCell;
+                        L.lastNonBasisCell = null;
                         const cellSizeInput = document.getElementById('cell-size-input');
                         if (cellSizeInput) cellSizeInput.value = CELL_SIZE.toFixed(1);
                     } else {
@@ -2698,80 +2776,15 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
         currentSuffixBytes.fill(0);
         currentSuffixBytes = []; 
         
-        // Clear Uploaded Image
-        if (importState.active || previewImg.src) {
-               lastNonBasisImportRect = null;
-               lastBasisImportRect = null;
-               lastNonBasisCellSize = null;
-             importState.active = false;
-             importState.width = 0;
-             importState.height = 0;
-             importOverlay.style.display = 'none';
-             importOverlay.classList.remove('import-outside');
-             importOverlay.classList.remove('image-basis');
-             clearDeleteZones();
-             previewImg.removeAttribute('src'); // Clear src to stop renderQR from drawing
-             fileInput.value = ''; 
-             cleanupVideoObjectUrl();
-             uploadInfo = {
-                 mime: null,
-                 name: null,
-                 isGif: false,
-                 isVideo: false,
-                 isAnimated: false,
-                 animatedType: null,
-                 gifFrames: null,
-                 gifFullFrames: null,
-                 gifWidth: 0,
-                 gifHeight: 0,
-                 gifBuffer: null,
-                 videoObjectUrl: null,
-                 videoDuration: 0,
-                 videoFps: 30,
-                 videoElement: null,
-                 firstFrameUrl: null
-             };
-             stopGifPreview();
-             if (embedImageCb) {
-                 embedImageCb.checked = false;
-                 embedImageCb.disabled = true;
-             }
-             if (dynamicPreviewCb) {
-                 dynamicPreviewCb.checked = false;
-                 dynamicPreviewCb.disabled = true;
-             }
-             if (imageBasisCb) {
-                 imageBasisCb.checked = false;
-                 imageBasisCb.disabled = true;
-             }
-             if (artisticModeCb) {
-                 artisticModeCb.checked = false;
-                 artisticModeCb.disabled = true;
-             }
-             if (allowCoveredFreedomCb) {
-                 allowCoveredFreedomCb.checked = false;
-                 allowCoveredFreedomCb.disabled = true;
-             }
-             if (fillDirectionSelect) {
-                 fillDirectionSelect.value = 'top-down';
-                 fillDirectionSelect.disabled = true;
-             }
-             resetEmphasizeOptionsToDefault(false);
-             if (invertToneCb) {
-                 invertToneCb.checked = false;
-                 invertToneCb.disabled = true;
-             }
-             if (exportAudioCb) {
-                 exportAudioCb.checked = true;
-                 exportAudioCb.disabled = true;
-             }
-             if (cellSizeAutoBtn) {
-                 cellSizeAutoBtn.style.display = 'none';
-             }
+        // Clear Uploaded Image(s)
+        if (imageLayers.length > 0) {
+            while (imageLayers.length > 0) {
+                removeImageLayer(imageLayers.length - 1);
+            }
         }
 
         hasUserEdits = false;
-        hasImageUpload = false;
+        hasImageUpload = imageLayers.length > 0;
         maskPattern = -1;
         refreshImageSizeControlVisibility();
         updateMaskControls();
@@ -2885,8 +2898,24 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
     importBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleImageUpload);
 
-    // Import Interaction
-    importOverlay.addEventListener('mousedown', startImportDrag);
+    // Multi-image layer panel
+    const layerSelect = document.getElementById('image-layer-select');
+    const layerUpBtn = document.getElementById('image-layer-up');
+    const layerDownBtn = document.getElementById('image-layer-down');
+    const layerDelBtn = document.getElementById('image-layer-del');
+    if (layerSelect) {
+        layerSelect.addEventListener('change', () => {
+            const v = parseInt(layerSelect.value, 10);
+            if (Number.isFinite(v)) setActiveLayer(v);
+        });
+    }
+    if (layerUpBtn) layerUpBtn.addEventListener('click', () => moveActiveLayer(1));
+    if (layerDownBtn) layerDownBtn.addEventListener('click', () => moveActiveLayer(-1));
+    if (layerDelBtn) layerDelBtn.addEventListener('click', () => removeImageLayer(activeImageIndex));
+    refreshLayerPanel();
+
+    // Import Interaction (handles layer selection for multi-image uploads)
+    importOverlay.addEventListener('mousedown', onLayerOverlayMouseDown);
     // Move and Up are global (in case mouse leaves overlay)
     document.addEventListener('mousemove', moveImportDrag);
     document.addEventListener('mouseup', endImportDrag);
@@ -3981,12 +4010,24 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
         ? Math.max(1, Math.round(basisImageHeight || src.height))
         : evalCanvasW;
 
+    // With multiple layers (no per-frame override), composite all layers into
+    // the evaluation canvas so targets follow the topmost layer's pixels.
+    const composited = !optimizationImageSourceOverride && imageLayers.length > 0;
+    const solveSource = composited
+        ? buildCompositeCanvas(evalCanvasW, evalCanvasH)
+        : sourceImage;
+
     if (basisMode) {
         const basisBox = getBasisQrBoxInternal();
         qrStartX = basisBox.x;
         qrStartY = basisBox.y;
         moduleW = basisBox.width / totalModules;
         moduleH = basisBox.height / totalModules;
+        imageBoxX = 0;
+        imageBoxY = 0;
+        imageBoxW = evalCanvasW;
+        imageBoxH = evalCanvasH;
+    } else if (composited) {
         imageBoxX = 0;
         imageBoxY = 0;
         imageBoxW = evalCanvasW;
@@ -4002,11 +4043,12 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     }
 
     const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = src.width;
-    tmpCanvas.height = src.height;
+    const solveDim = composited ? { width: evalCanvasW, height: evalCanvasH } : src;
+    tmpCanvas.width = solveDim.width;
+    tmpCanvas.height = solveDim.height;
     const tCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
-    tCtx.drawImage(sourceImage, 0, 0, src.width, src.height);
-    const imgData = tCtx.getImageData(0, 0, src.width, src.height).data;
+    tCtx.drawImage(solveSource, 0, 0, solveDim.width, solveDim.height);
+    const imgData = tCtx.getImageData(0, 0, solveDim.width, solveDim.height).data;
 
     const targetAt = (r, c) => {
         const cx = qrStartX + (c + qrMargin) * moduleW + moduleW / 2;
@@ -4015,13 +4057,14 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
             cx,
             cy,
             { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
-            src.width,
-            src.height
+            solveDim.width,
+            solveDim.height,
+            composited ? 0 : undefined
         );
         const localX = Math.floor(mapped.lx);
         const localY = Math.floor(mapped.ly);
-        if (localX < 0 || localX >= src.width || localY < 0 || localY >= src.height) return null;
-        const idx = (localY * src.width + localX) * 4;
+        if (localX < 0 || localX >= solveDim.width || localY < 0 || localY >= solveDim.height) return null;
+        const idx = (localY * solveDim.width + localX) * 4;
         const rr = imgData[idx];
         const gg = imgData[idx + 1];
         const bb = imgData[idx + 2];
@@ -4782,6 +4825,7 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
     let imgData = null;
     let sourceW = 0;
     let sourceH = 0;
+    let composited = false;
     let qrStartX = 0;
     let qrStartY = 0;
     let moduleW = CELL_SIZE;
@@ -4792,7 +4836,9 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
     let imageBoxH = 1;
 
     if (previewImg.src && importState.width > 0) {
-        const src = getSourceDimensions(previewImg);
+        composited = imageLayers.length > 0 && canvas.width > 0 && canvas.height > 0;
+        const useSource = composited ? buildCompositeCanvas(canvas.width, canvas.height) : previewImg;
+        const src = getSourceDimensions(useSource);
         sourceW = src.width;
         sourceH = src.height;
         if (sourceW > 0 && sourceH > 0) {
@@ -4802,7 +4848,7 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                 tc.width = sourceW;
                 tc.height = sourceH;
                 const tempCtx = tc.getContext('2d', { willReadFrequently: true });
-                tempCtx.drawImage(previewImg, 0, 0, sourceW, sourceH);
+                tempCtx.drawImage(useSource, 0, 0, sourceW, sourceH);
                 imgData = tempCtx.getImageData(0, 0, sourceW, sourceH);
 
                 const count = generatedQR ? generatedQR.getModuleCount() : pixelMap.length;
@@ -4813,6 +4859,15 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                     qrStartY = basisBox.y;
                     moduleW = basisBox.width / totalModules;
                     moduleH = basisBox.height / totalModules;
+                    imageBoxX = 0;
+                    imageBoxY = 0;
+                    imageBoxW = canvas.width;
+                    imageBoxH = canvas.height;
+                } else if (composited) {
+                    qrStartX = 0;
+                    qrStartY = 0;
+                    moduleW = CELL_SIZE;
+                    moduleH = CELL_SIZE;
                     imageBoxX = 0;
                     imageBoxY = 0;
                     imageBoxW = canvas.width;
@@ -4854,7 +4909,8 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                          modCY,
                          { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
                          sourceW,
-                         sourceH
+                         sourceH,
+                         composited ? 0 : undefined
                      );
                      const ix = Math.floor(mapped.lx);
                      const iy = Math.floor(mapped.ly);
@@ -5377,7 +5433,7 @@ function drawGrid(suffixStr, type, mask, hasSeparator, padBytesForRender = null)
     renderQR(false);
 }
 
-function renderQR(isExport, imageOverride) {
+function renderQR(isExport, imageOverride, forceCompositeSource) {
     if (!generatedQR) return;
     const count = generatedQR.getModuleCount();
     const baseSize = (count + 2 * qrMargin) * CELL_SIZE;
@@ -5425,41 +5481,61 @@ function renderQR(isExport, imageOverride) {
     let offData = null;
     let bgData = null;
 
-    if (imageReady && importState.width > 0 && (basisMode || embedImage || artisticMode)) {
+    // When layers exist (and no per-frame override is supplied), build a
+    // composite of all layers so modules follow the topmost layer's pixels.
+    const compositeCanvas = (!imageOverride && imageLayers.length > 0)
+        ? buildCompositeCanvas(canvas.width, canvas.height)
+        : null;
+    const compositeReady = forceCompositeSource || (!!compositeCanvas && hasAnyImageReady());
+    const compositeSource = compositeCanvas || (forceCompositeSource ? imageOverride : null);
+
+    if ((imageReady || compositeReady) && importState.width > 0 && (basisMode || embedImage || artisticMode)) {
         try {
             hasImage = true;
-            if (basisMode) {
-                imgDrawX = 0;
-                imgDrawY = 0;
-                imgDrawW = canvas.width;
-                imgDrawH = canvas.height;
-            } else {
-                const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
-                imgDrawX = box.x;
-                imgDrawY = box.y;
-                imgDrawW = box.width;
-                imgDrawH = box.height;
-            }
-
-            // In image-basis mode the image is not rotated (only the QR rotates).
-            const imageRotDeg = basisMode ? 0 : imageRotationDeg;
             const offCan = document.createElement('canvas');
             offCan.width = canvas.width;
             offCan.height = canvas.height;
             const offCtx = offCan.getContext('2d', { willReadFrequently: true });
             offCtx.clearRect(0, 0, offCan.width, offCan.height);
-            drawRotatedImageBox(offCtx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
-                offCtx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
-            });
-            offData = offCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+            if (compositeReady) {
+                // The composite already positions every layer (with its own
+                // rotation); draw it 1:1 so offData/bgData reflect the topmost
+                // layer's pixels at each module.
+                offCtx.drawImage(compositeSource, 0, 0);
+                const shouldDrawBg = basisMode || embedImage;
+                if (shouldDrawBg) {
+                    ctx.drawImage(compositeSource, 0, 0);
+                }
+                bgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            } else {
+                if (basisMode) {
+                    imgDrawX = 0;
+                    imgDrawY = 0;
+                    imgDrawW = canvas.width;
+                    imgDrawH = canvas.height;
+                } else {
+                    const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
+                    imgDrawX = box.x;
+                    imgDrawY = box.y;
+                    imgDrawW = box.width;
+                    imgDrawH = box.height;
+                }
 
-            const shouldDrawBg = basisMode || embedImage;
-            if (shouldDrawBg) {
-                drawRotatedImageBox(ctx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
-                    ctx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+                // In image-basis mode the image is not rotated (only the QR rotates).
+                const imageRotDeg = basisMode ? 0 : imageRotationDeg;
+                drawRotatedImageBox(offCtx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
+                    offCtx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
                 });
+
+                const shouldDrawBg = basisMode || embedImage;
+                if (shouldDrawBg) {
+                    drawRotatedImageBox(ctx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
+                        ctx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
+                    });
+                }
+                bgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             }
-            bgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            offData = offCtx.getImageData(0, 0, canvas.width, canvas.height).data;
         } catch (e) {
             console.error(e);
         }
@@ -6228,7 +6304,286 @@ async function copyToClipboard() {
     }
 }
 
+function hasAnyVideoLayer() {
+    return imageLayers.some((L) => L && L.uploadInfo && L.uploadInfo.isVideo);
+}
+
+function hasAnyAnimatedLayer() {
+    return imageLayers.some((L) => L && L.uploadInfo && L.uploadInfo.isAnimated);
+}
+
+function lcmTwo(a, b) {
+    if (a <= 0 || b <= 0) return Math.max(a, b);
+    const gcd = (x, y) => { while (y) { const t = x % y; x = y; y = t; } return x; };
+    return (a / gcd(a, b)) * b;
+}
+
+function getLayerDurationMs(L) {
+    const ui = L && L.uploadInfo;
+    if (!ui) return 0;
+    if (ui.isVideo) {
+        return Math.max(0, Math.round((ui.videoDuration || 0) * 1000));
+    }
+    if (ui.isAnimated && ui.gifFrames && ui.gifFrames.length) {
+        return ui.gifFrames.reduce((s, f) => s + getGifFrameDelayMs(f), 0);
+    }
+    return 0;
+}
+
+// Pre-render a layer's animation into standalone canvases so the export can
+// pick the right frame for any playback time. Static layers get no frames
+// (durationMs 0) and the composite falls back to their <img>.
+async function preRenderLayerFrames(L) {
+    const ui = L && L.uploadInfo;
+    if (ui && ui.isVideo && ui.videoObjectUrl) {
+        const video = document.createElement('video');
+        video.preload = 'auto';
+        video.muted = true;
+        video.volume = 0;
+        video.playsInline = true;
+        video.crossOrigin = 'anonymous';
+        video.src = ui.videoObjectUrl;
+        await new Promise((resolve, reject) => {
+            video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+            video.addEventListener('error', () => reject(new Error('视频加载失败')), { once: true });
+        });
+        const w = video.videoWidth || ui.gifWidth || 1;
+        const h = video.videoHeight || ui.gifHeight || 1;
+        const dur = Math.max(0.01, getSafeVideoDuration(video, ui.videoDuration || 0.01));
+        const fps = Math.max(1, Math.min(60, Math.round(ui.videoFps || 30)));
+        const total = Math.max(1, Math.floor(dur * fps));
+        const delayMs = Math.max(10, Math.round(1000 / fps));
+        const srcCanvas = document.createElement('canvas');
+        srcCanvas.width = w;
+        srcCanvas.height = h;
+        const sctx = srcCanvas.getContext('2d', { willReadFrequently: true });
+        const eps = 1 / Math.max(120, fps * 4);
+        const frames = [];
+        for (let i = 0; i < total; i++) {
+            const t = Math.min(Math.max(0, dur - eps), i / fps);
+            await seekVideo(video, t);
+            sctx.clearRect(0, 0, w, h);
+            sctx.drawImage(video, 0, 0, w, h);
+            const fc = document.createElement('canvas');
+            fc.width = w;
+            fc.height = h;
+            fc.getContext('2d', { willReadFrequently: true }).drawImage(srcCanvas, 0, 0);
+            frames.push({ canvas: fc, delayMs });
+        }
+        return { frames, durationMs: Math.max(1, frames.length * delayMs) };
+    }
+    if (ui && ui.isAnimated && ui.gifFrames && ui.gifFrames.length) {
+        const frames = ui.gifFrames;
+        const fullFrames = ui.gifFullFrames;
+        const w = ui.gifWidth || (L.img ? (L.img.naturalWidth || L.img.width) : 1) || 1;
+        const h = ui.gifHeight || (L.img ? (L.img.naturalHeight || L.img.height) : 1) || 1;
+        const cv = document.createElement('canvas');
+        cv.width = w;
+        cv.height = h;
+        const cctx = cv.getContext('2d', { willReadFrequently: true });
+        const renderer = createGifFrameRenderer(cctx, cv);
+        renderer.reset();
+        const out = [];
+        let totalMs = 0;
+        for (let i = 0; i < frames.length; i++) {
+            const f = frames[i];
+            const full = fullFrames && fullFrames[i];
+            if (full) {
+                drawFullFrameToCanvas(full, cctx, cv);
+            } else {
+                renderer.draw(f);
+            }
+            const fc = document.createElement('canvas');
+            fc.width = w;
+            fc.height = h;
+            fc.getContext('2d', { willReadFrequently: true }).drawImage(cv, 0, 0);
+            const d = Math.max(10, getGifFrameDelayMs(f));
+            out.push({ canvas: fc, delayMs: d });
+            totalMs += d;
+        }
+        return { frames: out, durationMs: Math.max(1, totalMs) };
+    }
+    return { frames: [], durationMs: 0 };
+}
+
+// Frame canvas for a layer at playback time t (looping when animated).
+function getLayerFrameAt(cache, t) {
+    if (!cache || cache.durationMs <= 0 || !cache.frames.length) return null;
+    const lt = t % cache.durationMs;
+    let acc = 0;
+    for (let i = 0; i < cache.frames.length; i++) {
+        acc += cache.frames[i].delayMs;
+        if (acc > lt) return cache.frames[i].canvas;
+    }
+    return cache.frames[cache.frames.length - 1].canvas;
+}
+
+// All playback times (ms) at which any layer's frame changes, within [0, T).
+function buildExportTimeline(frameCaches, totalDurationMs) {
+    const times = new Set([0, totalDurationMs]);
+    for (const cache of frameCaches) {
+        const dur = cache.durationMs;
+        if (dur <= 0 || !cache.frames.length) continue;
+        let acc = 0;
+        for (let i = 0; i < cache.frames.length; i++) {
+            acc += cache.frames[i].delayMs;
+            for (let t = acc; t < totalDurationMs; t += dur) {
+                times.add(t);
+            }
+        }
+    }
+    return Array.from(times).sort((a, b) => a - b);
+}
+
+// Ask the user for the total export duration; default is the least common
+// multiple of every animated layer's duration. Returns ms, or null if cancelled.
+function promptExportDurationMs(animatedLayers) {
+    const durations = animatedLayers.map(getLayerDurationMs).filter((d) => d > 0);
+    if (durations.length === 0) return null;
+    let lcmMs = durations.reduce((acc, d) => lcmTwo(acc, d), durations[0]);
+    if (!Number.isFinite(lcmMs) || lcmMs <= 0) lcmMs = Math.max(...durations);
+    if (lcmMs > 10 * 60 * 1000) {
+        lcmMs = Math.max(...durations);
+    }
+    const defaultSec = Math.ceil(lcmMs / 100) / 10;
+    const input = window.prompt(
+        `导出时长（秒）？\n默认 ${defaultSec} 秒 = 各动画时长的最小公倍数。\n导出动画中每个动图/视频将各自重复播放。`,
+        String(defaultSec)
+    );
+    if (input === null) return null;
+    const sec = parseFloat(input);
+    if (!Number.isFinite(sec) || sec <= 0) return null;
+    return Math.round(sec * 1000);
+}
+
+// Export multiple animated layers over a single user-controlled timeline; each
+// layer loops its own animation. Produces GIF or WebM depending on mime.
+async function exportMultiLayerAnimated(mime) {
+    if (!window.GIF) {
+        return await exportStaticBlob('image/png');
+    }
+    computeCancelRequested = false;
+
+    const animatedLayers = imageLayers.filter((L) => L.uploadInfo && L.uploadInfo.isAnimated);
+    if (animatedLayers.length === 0) {
+        return await exportStaticBlob('image/png');
+    }
+
+    const totalDurationMs = promptExportDurationMs(animatedLayers);
+    if (!totalDurationMs) {
+        throw new Error('导出已取消');
+    }
+
+    // Pre-render each layer's frames once.
+    const frameCaches = [];
+    for (let i = 0; i < imageLayers.length; i++) {
+        frameCaches.push(await preRenderLayerFrames(imageLayers[i]));
+    }
+
+    const timeline = buildExportTimeline(frameCaches, totalDurationMs);
+    const totalSegs = timeline.length - 1;
+    if (totalSegs <= 0) {
+        return await exportStaticBlob('image/png');
+    }
+
+    const isWebm = mime === 'video/webm';
+    const showProgress = totalSegs > 20;
+    const originalBytes = [...currentSuffixBytes];
+    if (showProgress) {
+        showComputeOverlay('计算中...', '正在逐帧计算导出内容', { showFrameProgress: true });
+        setComputeProgress(0, totalSegs);
+        setFrameComputeProgress(0, 1);
+    }
+
+    const buildCompositeAt = (t) => {
+        const override = imageLayers.map((_L, i) => getLayerFrameAt(frameCaches[i], t));
+        return buildCompositeCanvas(canvas.width, canvas.height, override);
+    };
+
+    const renderSegment = async (t) => {
+        const composite = buildCompositeAt(t);
+        currentSuffixBytes = [...originalBytes];
+        if (lastWhitenMode === 'white') {
+            setSuffixUniform(0);
+        } else if (lastWhitenMode === 'black') {
+            setSuffixUniform(1);
+        }
+        await applyImport(false, composite, false, { composited: true, skipArtisticPass: true });
+        renderQR(true, composite, true);
+        return composite;
+    };
+
+    try {
+        if (isWebm) {
+            if (!window.MediaRecorder) throw new Error('当前浏览器不支持视频导出');
+            const outputCanvas = document.createElement('canvas');
+            outputCanvas.width = Math.max(1, canvas.width);
+            outputCanvas.height = Math.max(1, canvas.height);
+            const octx = outputCanvas.getContext('2d', { willReadFrequently: true });
+            const streamFps = Math.max(4, Math.min(30, Math.round(totalSegs / Math.max(1, totalDurationMs / 1000))));
+            const stream = outputCanvas.captureStream(streamFps);
+            const chunks = [];
+            const recorder = new MediaRecorder(stream, { mimeType: pickWebmRecorderMimeType(false), videoBitsPerSecond: 8_000_000 });
+            recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
+            const recorderDone = new Promise((resolve) => { recorder.onstop = () => resolve(); });
+
+            const paint = (t) => {
+                octx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+                octx.drawImage(canvas, 0, 0);
+            };
+
+            await renderSegment(0);
+            paint(0);
+            recorder.start();
+            for (let s = 0; s < totalSegs; s++) {
+                if (computeCancelRequested) throw new Error('导出已取消');
+                await renderSegment(timeline[s + 1]);
+                paint(timeline[s + 1]);
+                const delay = Math.max(10, timeline[s + 1] - timeline[s]);
+                await new Promise((resolve) => setTimeout(resolve, Math.min(500, delay)));
+                if (showProgress) {
+                    setFrameComputeProgress(1, 1);
+                    setComputeProgress(s + 1, totalSegs);
+                }
+            }
+            recorder.stop();
+            await recorderDone;
+            return new Blob(chunks, { type: 'video/webm' });
+        }
+
+        const gif = new GIF({
+            workers: 2,
+            quality: 10,
+            workerScript: getGifWorkerScriptUrl()
+        });
+
+        for (let s = 0; s < totalSegs; s++) {
+            if (computeCancelRequested) throw new Error('导出已取消');
+            await renderSegment(timeline[s]);
+            const delay = Math.max(10, timeline[s + 1] - timeline[s]);
+            gif.addFrame(canvas, { copy: true, delay });
+            if (showProgress) {
+                setFrameComputeProgress(1, 1);
+                setComputeProgress(s + 1, totalSegs);
+            }
+        }
+        renderQR(false);
+        return await new Promise((resolve) => {
+            gif.on('finished', (blob) => resolve(blob));
+            gif.render();
+        });
+    } finally {
+        currentSuffixBytes = [...originalBytes];
+        updateQR();
+        if (showProgress) hideComputeOverlay();
+    }
+}
+
 function getOutputMime() {
+    if (imageLayers.length > 1) {
+        if (hasAnyVideoLayer()) return 'video/webm';
+        if (hasAnyAnimatedLayer()) return 'image/gif';
+    }
     if (uploadInfo && uploadInfo.isVideo) return 'video/webm';
     if (uploadInfo && uploadInfo.isAnimated && uploadInfo.gifFrames) return 'image/gif';
     if (uploadInfo && uploadInfo.mime) {
@@ -6270,6 +6625,11 @@ async function exportAndDownload() {
 }
 
 async function exportCurrentBlob(mime) {
+    // Multiple layers containing any animation: merge every layer's own
+    // looping animation onto one user-specified timeline.
+    if (imageLayers.length > 1 && hasAnyAnimatedLayer()) {
+        return await exportMultiLayerAnimated(mime);
+    }
     if (mime === 'video/webm' && uploadInfo && uploadInfo.isVideo) {
         return await exportVideoBlob();
     }
@@ -6795,11 +7155,20 @@ async function handleImageUpload(e) {
 
     stopGifPreview();
     invalidateAnimatedArtCache();
-    cleanupVideoObjectUrl();
+
+    // Every upload becomes a new layer. Keep the previous layers intact; only
+    // the very first upload starts from the stock <img>/overlay elements.
+    const isFirstLayer = imageLayers.length === 0;
+    if (!isFirstLayer) {
+        const newImg = document.createElement('img');
+        const newOverlay = createLayerOverlay(newImg);
+        previewImg = newImg;
+        importOverlay = newOverlay;
+    }
 
     const guessed = guessMimeFromName(file.name);
     const isVideo = !!(file.type && file.type.startsWith('video/'));
-    uploadInfo = {
+    const newUploadInfo = {
         mime: file.type || guessed || null,
         name: file.name || null,
         isGif: (file.type === 'image/gif') || (guessed === 'image/gif'),
@@ -6817,6 +7186,7 @@ async function handleImageUpload(e) {
         videoElement: null,
         firstFrameUrl: null
     };
+    uploadInfo = newUploadInfo;
 
     if (uploadInfo.isVideo) {
         try {
@@ -6963,14 +7333,19 @@ async function handleImageUpload(e) {
         if (bgTransparencyRange) bgTransparencyRange.value = '0';
         if (fgTransparencyValue) fgTransparencyValue.value = '0';
         if (bgTransparencyValue) bgTransparencyValue.value = '0';
-        setImageColorOptionsVisible(true);
-        basisImageWidth = previewImg.naturalWidth || previewImg.width || 0;
-        basisImageHeight = previewImg.naturalHeight || previewImg.height || 0;
+setImageColorOptionsVisible(true);
+        const natW = previewImg.naturalWidth || previewImg.width || 0;
+        const natH = previewImg.naturalHeight || previewImg.height || 0;
+        const L = registerActiveLayer(uploadInfo, previewImg, natW, natH, importOverlay);
+        basisImageWidth = L.basisImageWidth;
+        basisImageHeight = L.basisImageHeight;
         refreshImageSizeControlVisibility();
         updateRotationAndMarginPanel();
         lockAutoMaskIfNeeded();
+        refreshLayerPanel();
+        updateAllLayerOverlays();
         
-        startImportMode(previewImg.naturalWidth, previewImg.naturalHeight);
+        startImportMode(natW, natH);
         applyImport(false); 
         saveHistory(); 
         previewImg.onload = null;
@@ -7011,27 +7386,291 @@ function updateOverlayTransform() {
     importOverlay.classList.toggle('image-basis', basis);
     const embedOn = !!(embedImageCb && embedImageCb.checked);
     if (previewImg) previewImg.style.display = (basis || embedOn) ? 'none' : 'block';
+    updateAllLayerOverlays();
     updateAutoCellSizeButtonLabel();
     syncImageSizeInputs();
 }
 
 function updateOverlayVisibility() {
-    const embedCb = document.getElementById('embed-image-cb');
-    const ov = document.getElementById('import-overlay'); // Direct DOM access for safety
-    if (!ov) return;
-
-    // Show if Active AND (Checkbox Checked or Checkbox missing)
-    // If Unchecked -> Hidden "Temporarily"
-    const isChecked = isImageBasisMode() ? true : (!embedCb || embedCb.checked);
-    
-    // Fix: Ensure we strictly hide if unchecked, regardless of active state
-    if (importState.active && isChecked) {
-        ov.style.display = 'block';
-    } else {
-        ov.style.display = 'none';
-    }
-
+    updateAllLayerOverlays();
     updateRotationAndMarginPanel();
+}
+
+function getActiveLayer() {
+    if (activeImageIndex >= 0 && activeImageIndex < imageLayers.length) {
+        return imageLayers[activeImageIndex];
+    }
+    return null;
+}
+
+function createDefaultImportState() {
+    return {
+        active: false,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        relX: 0,
+        relY: 0,
+        isDragging: false,
+        lastX: 0,
+        lastY: 0,
+        lastMoveDx: 0,
+        lastMoveDy: 0,
+        dragGrabOffsetX: 0,
+        dragGrabOffsetY: 0,
+        imageRotationDeg: 0
+    };
+}
+
+function createLayerOverlay(imgEl) {
+    const ov = document.createElement('div');
+    ov.className = 'layer-overlay';
+    ov.style.display = 'none';
+    ov.style.position = 'absolute';
+    ov.style.border = '2px dashed #00f';
+    ov.style.zIndex = '10';
+    ov.style.overflow = 'visible';
+    ov.style.touchAction = 'none';
+    if (imgEl) {
+        imgEl.style.width = '100%';
+        imgEl.style.height = '100%';
+        imgEl.style.display = 'block';
+        imgEl.style.opacity = '0.7';
+        imgEl.style.pointerEvents = 'none';
+        ov.appendChild(imgEl);
+    }
+    ['n', 'w', 'e', 's', 'nw', 'ne', 'sw', 'se'].forEach((h) => {
+        const d = document.createElement('div');
+        d.className = 'resize-handle ' + h;
+        d.setAttribute('data-handle', h);
+        ov.appendChild(d);
+    });
+    const rot = document.createElement('div');
+    rot.className = 'image-rotate-handle';
+    rot.setAttribute('data-rotate', '1');
+    ov.appendChild(rot);
+    canvasWrapper.appendChild(ov);
+    ov.addEventListener('mousedown', onLayerOverlayMouseDown);
+    return ov;
+}
+
+// Register the freshly-created layer as active (globals become aliases).
+function registerActiveLayer(uploadInfoObj, imgEl, natW, natH, overlayEl) {
+    const L = {
+        id: 'img-layer-' + (++imageLayerSeq),
+        uploadInfo: uploadInfoObj,
+        img: imgEl,
+        importState: createDefaultImportState(),
+        basisImageWidth: Math.max(0, natW || 0),
+        basisImageHeight: Math.max(0, natH || 0),
+        imageRotationDeg: 0,
+        overlayEl: overlayEl
+    };
+    imageLayers.push(L);
+    activeImageIndex = imageLayers.length - 1;
+    importState = L.importState;
+    importOverlay = L.overlayEl;
+    previewImg = L.img;
+    uploadInfo = L.uploadInfo;
+    basisImageWidth = L.basisImageWidth;
+    basisImageHeight = L.basisImageHeight;
+    refreshLayerPanel();
+    return L;
+}
+
+function setActiveLayer(index) {
+    if (index < 0 || index >= imageLayers.length) return;
+    if (index === activeImageIndex) return;
+    stopGifPreview();
+    invalidateAnimatedArtCache();
+    activeImageIndex = index;
+    const L = imageLayers[index];
+    importState = L.importState;
+    importOverlay = L.overlayEl;
+    previewImg = L.img;
+    uploadInfo = L.uploadInfo;
+    basisImageWidth = L.basisImageWidth;
+    basisImageHeight = L.basisImageHeight;
+    if (imageRotationRange) imageRotationRange.value = String(normalizeAngleDeg(L.imageRotationDeg || 0));
+    if (imageRotationValue) imageRotationValue.value = String(L.imageRotationDeg || 0);
+    if (qrRotationRange) qrRotationRange.value = String(normalizeAngleDeg(qrRotationDeg));
+    refreshLayerPanel();
+    updateAllLayerOverlays();
+    syncImageSizeInputs();
+    updateRotationAndMarginPanel();
+    refreshImageSizeControlVisibility();
+    renderQR(false);
+}
+
+function removeImageLayer(index) {
+    if (index < 0 || index >= imageLayers.length) return;
+    const L = imageLayers[index];
+    stopGifPreview();
+    invalidateAnimatedArtCache();
+    // Keep the stock #import-overlay element in the DOM so it can be reused for
+    // the next upload; only remove dynamically-created clone overlays.
+    const originalOverlayEl = document.getElementById('import-overlay');
+    const isOriginalOverlay = L.overlayEl === originalOverlayEl;
+    if (L.overlayEl && L.overlayEl.parentNode && !isOriginalOverlay) {
+        L.overlayEl.parentNode.removeChild(L.overlayEl);
+    } else if (L.overlayEl && isOriginalOverlay) {
+        L.overlayEl.style.display = 'none';
+        L.overlayEl.classList.remove('import-outside');
+        L.overlayEl.classList.remove('image-basis');
+        const origImg = document.getElementById('preview-img');
+        if (origImg) origImg.removeAttribute('src');
+    }
+    if (L.uploadInfo && L.uploadInfo.videoObjectUrl) {
+        URL.revokeObjectURL(L.uploadInfo.videoObjectUrl);
+    }
+    imageLayers.splice(index, 1);
+    if (imageLayers.length === 0) {
+        activeImageIndex = -1;
+        importState = createDefaultImportState();
+        let oo = document.getElementById('import-overlay');
+        if (!oo) {
+            oo = document.createElement('div');
+            oo.id = 'import-overlay';
+            oo.style.display = 'none';
+            oo.style.position = 'absolute';
+            oo.style.border = '2px dashed #00f';
+            oo.style.zIndex = '10';
+            canvasWrapper.appendChild(oo);
+            oo.addEventListener('mousedown', onLayerOverlayMouseDown);
+        }
+        let oi = document.getElementById('preview-img');
+        if (!oi) {
+            oi = document.createElement('img');
+            oi.id = 'preview-img';
+            oo.appendChild(oi);
+        }
+        importOverlay = oo;
+        previewImg = oi;
+        uploadInfo = {
+            mime: null, name: null, isGif: false, isVideo: false, isAnimated: false,
+            animatedType: null, gifFrames: null, gifFullFrames: null, gifWidth: 0,
+            gifHeight: 0, gifBuffer: null, videoObjectUrl: null, videoDuration: 0,
+            videoFps: 30, videoElement: null, firstFrameUrl: null
+        };
+        basisImageWidth = 0;
+        basisImageHeight = 0;
+        hasImageUpload = false;
+        setCoveredModuleScalePercent(50, false);
+        setImageColorOptionsVisible(false);
+        refreshImageSizeControlVisibility();
+        updateRotationAndMarginPanel();
+        if (embedImageCb) { embedImageCb.checked = false; embedImageCb.disabled = true; }
+        if (dynamicPreviewCb) { dynamicPreviewCb.checked = false; dynamicPreviewCb.disabled = true; }
+        if (imageBasisCb) { imageBasisCb.checked = false; imageBasisCb.disabled = true; }
+        if (artisticModeCb) { artisticModeCb.checked = false; artisticModeCb.disabled = true; }
+        if (allowCoveredFreedomCb) { allowCoveredFreedomCb.checked = false; allowCoveredFreedomCb.disabled = true; }
+        if (fillDirectionSelect) { fillDirectionSelect.value = 'top-down'; fillDirectionSelect.disabled = true; }
+        resetEmphasizeOptionsToDefault(false);
+        if (invertToneCb) { invertToneCb.checked = false; invertToneCb.disabled = true; }
+        if (exportAudioCb) { exportAudioCb.checked = true; exportAudioCb.disabled = true; }
+        if (cellSizeAutoBtn) { cellSizeAutoBtn.style.display = 'none'; }
+        importOverlay.classList.remove('import-outside');
+        importOverlay.classList.remove('image-basis');
+        clearDeleteZones();
+        updateMaskControls();
+    } else {
+        if (activeImageIndex >= imageLayers.length) activeImageIndex = imageLayers.length - 1;
+        if (activeImageIndex >= index) activeImageIndex = Math.max(0, index === 0 ? 0 : index - 1);
+        const L2 = imageLayers[activeImageIndex];
+        importState = L2.importState;
+        importOverlay = L2.overlayEl;
+        previewImg = L2.img;
+        uploadInfo = L2.uploadInfo;
+        basisImageWidth = L2.basisImageWidth;
+        basisImageHeight = L2.basisImageHeight;
+    }
+    if (imageRotationRange) imageRotationRange.value = String(normalizeAngleDeg(imageRotationDeg));
+    refreshLayerPanel();
+    updateAllLayerOverlays();
+    updateRotationAndMarginPanel();
+    refreshImageSizeControlVisibility();
+    updateQR();
+    saveHistory();
+}
+
+function moveActiveLayer(delta) {
+    const idx = activeImageIndex;
+    const to = idx + delta;
+    if (idx < 0 || to < 0 || to >= imageLayers.length) return;
+    const tmp = imageLayers[idx];
+    imageLayers[idx] = imageLayers[to];
+    imageLayers[to] = tmp;
+    activeImageIndex = to;
+    refreshLayerPanel();
+    updateAllLayerOverlays();
+    updateQR();
+    saveHistory();
+}
+
+// Position every layer's overlay frame from its own importState; the active
+// layer's frame is raised above the others. Frames are shown when the layer is
+// active and the embed/basis visibility rules allow it.
+function updateAllLayerOverlays() {
+    const basis = isImageBasisMode();
+    const embedOn = !!(embedImageCb && embedImageCb.checked);
+    for (let i = 0; i < imageLayers.length; i++) {
+        const L = imageLayers[i];
+        const st = L.importState;
+        const ov = L.overlayEl;
+        if (!ov) continue;
+        if (st.active && st.width > 0 && st.height > 0 && (basis || embedOn)) {
+            ov.style.display = 'block';
+            ov.style.width = st.width + 'px';
+            ov.style.height = st.height + 'px';
+            ov.style.left = st.x + 'px';
+            ov.style.top = st.y + 'px';
+            ov.style.zIndex = i === activeImageIndex ? '12' : '10';
+            ov.classList.toggle('image-basis', basis);
+            if (L.img) L.img.style.display = (basis || embedOn) ? 'none' : 'block';
+        } else {
+            ov.style.display = 'none';
+        }
+    }
+}
+
+function refreshLayerPanel() {
+    const sel = document.getElementById('image-layer-select');
+    const group = document.getElementById('image-layers-group');
+    const upBtn = document.getElementById('image-layer-up');
+    const downBtn = document.getElementById('image-layer-down');
+    const delBtn = document.getElementById('image-layer-del');
+    if (group) group.style.display = imageLayers.length > 0 ? 'block' : 'none';
+    if (sel) {
+        sel.innerHTML = '';
+        for (let i = 0; i < imageLayers.length; i++) {
+            const L = imageLayers[i];
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = (L.uploadInfo && L.uploadInfo.name) ? L.uploadInfo.name : ('图片 ' + (i + 1));
+            if (i === activeImageIndex) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    }
+    if (upBtn) upBtn.disabled = imageLayers.length < 2 || activeImageIndex <= 0;
+    if (downBtn) downBtn.disabled = imageLayers.length < 2 || activeImageIndex >= imageLayers.length - 1;
+    if (delBtn) delBtn.disabled = imageLayers.length === 0;
+}
+
+function onLayerOverlayMouseDown(e) {
+    if (e.target.tagName === 'BUTTON') return;
+    const ov = e.target.closest('.layer-overlay, #import-overlay');
+    if (ov) {
+        const idx = imageLayers.findIndex((L) => L.overlayEl === ov);
+        if (idx !== -1 && idx !== activeImageIndex) {
+            setActiveLayer(idx);
+        }
+    }
+    if (e.target.classList.contains('image-rotate-handle')) {
+        startImageRotateDrag(e);
+        return;
+    }
+    startImportDrag(e);
 }
 
 function getImageRect() {
@@ -7096,80 +7735,29 @@ function updateOutOfBoundsState() {
 }
 
 function clearImportedImage() {
-    importState.active = false;
-    lastNonBasisImportRect = null;
-    lastBasisImportRect = null;
-    lastNonBasisCellSize = null;
-    importState.width = 0;
-    importState.height = 0;
-    importOverlay.classList.remove('import-outside');
-    importOverlay.classList.remove('image-basis');
+    // Dragging the active layer's frame out of bounds deletes that layer.
+    if (activeImageIndex >= 0 && activeImageIndex < imageLayers.length) {
+        removeImageLayer(activeImageIndex);
+    }
     clearDeleteZones();
-    importOverlay.style.display = 'none';
-    previewImg.removeAttribute('src');
-    fileInput.value = '';
-    cleanupVideoObjectUrl();
-    uploadInfo = {
-        mime: null,
-        name: null,
-        isGif: false,
-        isVideo: false,
-        isAnimated: false,
-        animatedType: null,
-        gifFrames: null,
-        gifFullFrames: null,
-        gifWidth: 0,
-        gifHeight: 0,
-        gifBuffer: null,
-        videoObjectUrl: null,
-        videoDuration: 0,
-        videoFps: 30,
-        videoElement: null,
-        firstFrameUrl: null
-    };
-animatedArtCache = null;
-    hasImageUpload = false;
-    setCoveredModuleScalePercent(50, false);
-    setImageColorOptionsVisible(false);
-    refreshImageSizeControlVisibility();
-    updateRotationAndMarginPanel();
-    stopGifPreview();
-    if (embedImageCb) {
-        embedImageCb.checked = false;
-        embedImageCb.disabled = true;
-    }
-    if (dynamicPreviewCb) {
-        dynamicPreviewCb.checked = false;
-        dynamicPreviewCb.disabled = true;
-    }
-    if (imageBasisCb) {
-        imageBasisCb.checked = false;
-        imageBasisCb.disabled = true;
-    }
-    if (artisticModeCb) {
-        artisticModeCb.checked = false;
-        artisticModeCb.disabled = true;
-    }
-    if (allowCoveredFreedomCb) {
-        allowCoveredFreedomCb.checked = false;
-        allowCoveredFreedomCb.disabled = true;
-    }
-    if (fillDirectionSelect) {
-        fillDirectionSelect.value = 'top-down';
-        fillDirectionSelect.disabled = true;
-    }
-    resetEmphasizeOptionsToDefault(false);
-    if (invertToneCb) {
-        invertToneCb.checked = false;
-        invertToneCb.disabled = true;
-    }
-    if (exportAudioCb) {
-        exportAudioCb.checked = true;
-        exportAudioCb.disabled = true;
-    }
-    if (cellSizeAutoBtn) cellSizeAutoBtn.style.display = 'none';
     updateMaskControls();
-    updateQR();
+}
+
+// Rotation is not supported in image-basis mode (the QR rotates, the image
+// does not), so the handle only acts in non-basis mode.
+function startImageRotateDrag(e) {
+    if (!importState.active) return;
+    if (isImageBasisMode()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    importState.isRotating = true;
+    importState.startRotDeg = imageRotationDeg;
+    const rect = importOverlay.getBoundingClientRect();
+    importState.rotStartAngle = Math.atan2(
+        e.clientY - (rect.top + rect.height / 2),
+        e.clientX - (rect.left + rect.width / 2)
+    );
+    saveHistory();
 }
 
 function startImportDrag(e) {
@@ -7226,8 +7814,19 @@ function moveImportDrag(e) {
     };
     
     let didChange = false;
-    
-    if (importState.isResizing) {
+
+    if (importState.isRotating) {
+        e.preventDefault();
+        const rect = importOverlay.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const curAngle = Math.atan2(e.clientY - cy, e.clientX - cx);
+        const deg = (curAngle - importState.rotStartAngle) * 180 / Math.PI;
+        setImageRotationDeg(normalizeAngleDeg(importState.startRotDeg + deg), false);
+        invalidateAnimatedArtCache();
+        renderQR(false);
+        didChange = true;
+    } else if (importState.isResizing) {
         e.preventDefault();
         const dx = e.clientX - importState.lastX;
         const dy = e.clientY - importState.lastY;
@@ -7345,10 +7944,14 @@ function endImportDrag() {
         }
         // Apply final changes to Data
         applyImport(true, previewImg, true); 
+    } else if (importState.isRotating) {
+        // Rotation only affects the module luminance mapping.
+        applyImport(true, previewImg, true);
     }
     
     importState.isDragging = false;
     importState.isResizing = false;
+    importState.isRotating = false;
     importState.resizeHandle = null;
     importState.lastMoveDx = 0;
     importState.lastMoveDy = 0;
@@ -7406,15 +8009,24 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
     const canvasRect = canvas.getBoundingClientRect();
     if (canvasRect.width === 0 || canvasRect.height === 0) return;
 
-    const sourceW = imageSource.naturalWidth || imageSource.width || 0;
-    const sourceH = imageSource.naturalHeight || imageSource.height || 0;
+    // When multiple layers exist (and no per-frame override), composite them so
+    // the suffix follows the topmost layer's pixels in overlap areas.
+    let composited = !!options.composited;
+    let effectiveSource = imageSource;
+    if (!composited && !hasExternalImageSource && imageLayers.length > 0 && canvas.width > 0 && canvas.height > 0) {
+        effectiveSource = buildCompositeCanvas(canvas.width, canvas.height);
+        composited = true;
+    }
+
+    const sourceW = effectiveSource.naturalWidth || effectiveSource.width || 0;
+    const sourceH = effectiveSource.naturalHeight || effectiveSource.height || 0;
     if (sourceW <= 0 || sourceH <= 0) return;
 
     const tmpCanvas = document.createElement('canvas');
     tmpCanvas.width = sourceW;
     tmpCanvas.height = sourceH;
     const tCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
-    tCtx.drawImage(imageSource, 0, 0, sourceW, sourceH);
+    tCtx.drawImage(effectiveSource, 0, 0, sourceW, sourceH);
     const imgData = tCtx.getImageData(0, 0, sourceW, sourceH);
 
     const qrSize = pixelMap.length;
@@ -7434,6 +8046,13 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
         qrStartY = basisBox.y;
         moduleW = basisBox.width / totalModulesVisual;
         moduleH = basisBox.height / totalModulesVisual;
+        imageBoxX = 0;
+        imageBoxY = 0;
+        imageBoxW = Math.max(1, canvas.width);
+        imageBoxH = Math.max(1, canvas.height);
+    } else if (composited) {
+        // The composite already positions every layer; sample the canvas pixels
+        // directly (no box / no rotation re-application).
         imageBoxX = 0;
         imageBoxY = 0;
         imageBoxW = Math.max(1, canvas.width);
@@ -7466,7 +8085,8 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
                     cy,
                     { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
                     sourceW,
-                    sourceH
+                    sourceH,
+                    composited ? 0 : undefined
                 );
                 localX = Math.floor(mapped.lx);
                 localY = Math.floor(mapped.ly);

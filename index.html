@@ -269,10 +269,21 @@
                 <h3>高级作画</h3>
                 <p class="hint">左键绘制，右键擦除。</p>
                 <div class="tools">
-                    <button id="import-btn" class="tool-btn" title="上传图片/视频 (自动像素化)">🖼️</button>
+                    <button id="import-btn" class="tool-btn" title="导入图片/视频 (自动像素化)">🖼️</button>
                     <button id="clear-draw" class="tool-btn" title="清空绘制">🗑️</button>
                     <button id="whiten-btn" class="tool-btn" title="一键全白 (自由区填充白色)">☀️</button>
-                    <button id="download-btn" class="tool-btn" title="下载图片/视频">💾</button>
+                    <button id="download-btn" class="tool-btn" title="导出图片/视频">💾</button>
+                </div>
+
+                <div class="control-group full-width" id="image-layers-group" style="display: none; margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 6px;">
+                        <span>图片图层</span>
+                        <select id="image-layer-select" style="flex: 1; min-width: 0;"></select>
+                        <button id="image-layer-up" class="tool-btn" title="上移一层 (置顶)" style="flex: none; padding: 4px 8px; font-size: 15px;">⬆</button>
+                        <button id="image-layer-down" class="tool-btn" title="下移一层 (置底)" style="flex: none; padding: 4px 8px; font-size: 15px;">⬇</button>
+                        <button id="image-layer-del" class="tool-btn" title="删除该图片" style="flex: none; padding: 4px 8px; font-size: 15px;">🗑</button>
+                    </label>
+                    <p class="hint option-hint">可导入多张图片并存；重叠处二维码模块跟随最顶层的图片明暗（下拉列表下方为顶层）。拖动各自蓝色边框可调整位置/大小/旋转。</p>
                 </div>
 
                 <div class="control-group full-width" style="margin-top: 8px;">
@@ -378,6 +389,7 @@
                     <div class="resize-handle ne" data-handle="ne"></div>
                     <div class="resize-handle sw" data-handle="sw"></div>
                     <div class="resize-handle se" data-handle="se"></div>
+                    <div class="image-rotate-handle" title="拖动旋转图片"></div>
 
                     <div class="import-controls" style="position: absolute; top: -40px; right: 0; display: none; gap: 5px; justify-content: flex-end; background: rgba(255,255,255,0.9); padding: 5px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
                         <button id="import-ok" style="background: #2ecc71; color: white; border: none; padding: 5px 10px; cursor: pointer;">✅ 应用</button>

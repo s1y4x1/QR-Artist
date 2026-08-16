@@ -728,6 +728,44 @@ canvas {
 .resize-handle.sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
 .resize-handle.se { bottom: -5px; right: -5px; cursor: nwse-resize; }
 
+/* Per-layer overlay frames (clones of #import-overlay) */
+.layer-overlay {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px dashed #00f;
+}
+.layer-overlay.image-basis {
+    border-color: #1e88e5 !important;
+}
+
+/* Rotation handle for the image resize frame */
+.image-rotate-handle {
+    position: absolute;
+    top: -30px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 14px;
+    height: 14px;
+    background: #00f;
+    border: 1px solid white;
+    border-radius: 50%;
+    cursor: grab;
+    z-index: 20;
+}
+.image-rotate-handle::after {
+    content: '';
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 12px;
+    background: #00f;
+}
+.image-rotate-handle:active {
+    cursor: grabbing;
+}
+
 .import-outside {
     border-color: rgba(231, 76, 60, 0.9) !important;
     background: rgba(231, 76, 60, 0.15);

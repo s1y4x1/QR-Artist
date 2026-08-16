@@ -966,12 +966,12 @@
 
             function downloadPng() {
                 if (!lastGenerated) {
-                    setStatus('当前结果未通过可接受判定，不能下载。', true);
+                    setStatus('当前结果未通过可接受判定，不能导出。', true);
                     return;
                 }
                 transparentCanvas.toBlob(function (blob) {
                     if (!blob) {
-                        setStatus('下载失败：无法导出 PNG。', true);
+                        setStatus('导出失败：无法导出 PNG。', true);
                         return;
                     }
                     const url = URL.createObjectURL(blob);
