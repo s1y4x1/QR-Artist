@@ -2048,19 +2048,23 @@ function initImportOverlayByMode(natW, natH) {
         const aspect = (natW > 0 && natH > 0) ? (natW / natH) : 1;
         const displayW = parseFloat(canvas.style.width) || canvas.width || viewW;
         const displayH = parseFloat(canvas.style.height) || canvas.height || viewH;
+        // Fit the image into the QR module grid (one side's module count x
+        // module size), not the whole canvas, so an image that fits the QR at
+        // natural size is kept at its original size and a larger one is scaled
+        // to the largest size that still fits the QR completely.
+        const gridPx = getQrGridCanvasSize();
+        const fitW = gridPx > 0 ? Math.max(1, gridPx * zoomLevel) : displayW;
+        const fitH = gridPx > 0 ? Math.max(1, gridPx * zoomLevel) : displayH;
         let initW;
         let initH;
         if (natW > 0 && natH > 0) {
-            // Fit the image into the QR area: if it fits completely at natural
-            // size, do not scale it; otherwise use the largest scale that lets
-            // it fit completely.
-            if (natW <= displayW && natH <= displayH) {
-                initW = Math.max(20, natW);
-                initH = Math.max(20, natH);
+            if (natW <= fitW && natH <= fitH) {
+                initW = natW;
+                initH = natH;
             } else {
-                const scale = Math.min(1, displayW / natW, displayH / natH);
-                initW = Math.max(20, natW * scale);
-                initH = Math.max(20, initW / aspect);
+                const scale = Math.min(1, fitW / natW, fitH / natH);
+                initW = Math.max(1, natW * scale);
+                initH = Math.max(1, natH * scale);
             }
         } else {
             initW = viewW * 0.5;
@@ -2130,23 +2134,25 @@ function areAdjacentSides(a, b) {
 }
 
 function getPointerDeleteBounds() {
-    const areaRect = previewArea ? previewArea.getBoundingClientRect() : canvasWrapper.getBoundingClientRect();
-    const qrRect = getQrRect();
+    const qrRect = getQrMatrixRect();
     const w = importState.width;
     const h = importState.height;
     const gx = importState.dragGrabOffsetX;
     const gy = importState.dragGrabOffsetY;
 
-    const leftClient = qrRect.left - (w - gx);
-    const rightClient = qrRect.right + gx;
-    const topClient = qrRect.top - (h - gy);
-    const bottomClient = qrRect.bottom + gy;
+    // getQrMatrixRect()/importState live in canvas-wrapper-relative coords,
+    // while the delete-hint stripes are positioned inside the preview area;
+    // convert the bounds to that area-local coordinate system.
+    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    const areaRect = previewArea ? previewArea.getBoundingClientRect() : wrapperRect;
+    const ox = wrapperRect.left - areaRect.left;
+    const oy = wrapperRect.top - areaRect.top;
 
     return {
-        left: leftClient - areaRect.left,
-        right: rightClient - areaRect.left,
-        top: topClient - areaRect.top,
-        bottom: bottomClient - areaRect.top
+        left: qrRect.left - (w - gx) + ox,
+        right: qrRect.right + gx + ox,
+        top: qrRect.top - (h - gy) + oy,
+        bottom: qrRect.bottom + gy + oy
     };
 }
 
@@ -4032,10 +4038,10 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
         imageBoxY = 0;
         imageBoxW = evalCanvasW;
         imageBoxH = evalCanvasH;
-    } else {
-        const displayW = parseFloat(canvas.style.width) || canvas.width || evalCanvasW;
-        const displayH = parseFloat(canvas.style.height) || canvas.height || evalCanvasH;
-        const box = getOverlayInnerBoxInternal(evalCanvasW, evalCanvasH, displayW, displayH);
+} else {
+        const displayW = parseFloat(canvas.style.width) || canvas.width;
+        const displayH = parseFloat(canvas.style.height) || canvas.height;
+        const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
         imageBoxX = box.x;
         imageBoxY = box.y;
         imageBoxW = Math.max(1, box.width);
@@ -7627,6 +7633,11 @@ function updateAllLayerOverlays() {
             ov.style.top = st.y + 'px';
             ov.style.zIndex = i === activeImageIndex ? '12' : '10';
             ov.classList.toggle('image-basis', basis);
+            // In image-basis mode the image does not rotate (the QR does); the
+            // frame and its resize/rotate handles otherwise follow the rotation.
+            const rot = basis ? 0 : (L.imageRotationDeg || 0);
+            ov.style.transformOrigin = 'center center';
+            ov.style.transform = rot ? ('rotate(' + rot + 'deg)') : '';
             if (L.img) L.img.style.display = (basis || embedOn) ? 'none' : 'block';
         } else {
             ov.style.display = 'none';
@@ -7682,6 +7693,30 @@ function getImageRect() {
     };
 }
 
+function getQrGridCanvasSize() {
+    const count = generatedQR ? generatedQR.getModuleCount() : 0;
+    if (count <= 0) return 0;
+    return Math.max(1, (count + 2 * qrMargin) * CELL_SIZE);
+}
+
+// On-screen rect of the QR module grid (excluding any outer margin), in
+// canvas-wrapper-relative coordinates. Falls back to the whole canvas rect
+// when no QR has been generated yet.
+function getQrMatrixRect() {
+    const gridPx = getQrGridCanvasSize() * zoomLevel;
+    if (gridPx <= 0) {
+        return getQrRect();
+    }
+    const left = canvas.offsetLeft + outerMarginPx * zoomLevel;
+    const top = canvas.offsetTop + outerMarginPx * zoomLevel;
+    return {
+        left,
+        top,
+        right: left + gridPx,
+        bottom: top + gridPx
+    };
+}
+
 function getQrRect() {
     const left = canvas.offsetLeft;
     const top = canvas.offsetTop;
@@ -7700,7 +7735,7 @@ function hasOverlap(a, b) {
 }
 
 function clampToKeepCanvasOverlap(nextX, nextY) {
-    const qrRect = getQrRect();
+    const qrRect = getQrMatrixRect();
     const minOverlap = 1;
     const minX = qrRect.left - importState.width + minOverlap;
     const maxX = qrRect.right - minOverlap;
@@ -7718,7 +7753,7 @@ function updateOutOfBoundsState() {
         return false;
     }
     const imgRect = getImageRect();
-    const qrRect = getQrRect();
+    const qrRect = getQrMatrixRect();
     const exceed = getExceededSidesByDistance(imgRect, qrRect);
     const overlap = hasOverlap(imgRect, qrRect);
     importState.outOfBounds = !overlap;
@@ -8065,6 +8100,14 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
         imageBoxY = box.y;
         imageBoxW = Math.max(1, box.width);
         imageBoxH = Math.max(1, box.height);
+    }
+
+    // Non-basis mode: a positive outer margin insets the QR grid inside the
+    // canvas, so sample module centers from the same inset as the rendered
+    // modules (otherwise the image coverage is offset by the margin).
+    if (!basisMode && outerMarginPx > 0) {
+        qrStartX = outerMarginPx;
+        qrStartY = outerMarginPx;
     }
 
     let changed = false;
