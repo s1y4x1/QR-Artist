@@ -2195,25 +2195,26 @@ function areAdjacentSides(a, b) {
 }
 
 function getPointerDeleteBounds() {
-    const qrRect = getQrMatrixRect();
-    const w = importState.width;
-    const h = importState.height;
+    const targetRect = getImportMoveBoundaryRect();
+    const visualRect = getImportVisualRect();
+    const w = visualRect.right - visualRect.left;
+    const h = visualRect.bottom - visualRect.top;
     const gx = importState.dragGrabOffsetX;
     const gy = importState.dragGrabOffsetY;
 
-    // getQrMatrixRect()/importState live in canvas-wrapper-relative coords,
+    // Boundary/importState live in canvas-wrapper content coordinates,
     // while the delete-hint stripes are positioned inside the preview area;
     // convert the bounds to that area-local coordinate system.
     const wrapperRect = canvasWrapper.getBoundingClientRect();
     const areaRect = previewArea ? previewArea.getBoundingClientRect() : wrapperRect;
-    const ox = wrapperRect.left - areaRect.left;
-    const oy = wrapperRect.top - areaRect.top;
+    const ox = wrapperRect.left - areaRect.left - canvasWrapper.scrollLeft;
+    const oy = wrapperRect.top - areaRect.top - canvasWrapper.scrollTop;
 
     return {
-        left: qrRect.left - (w - gx) + ox,
-        right: qrRect.right + gx + ox,
-        top: qrRect.top - (h - gy) + oy,
-        bottom: qrRect.bottom + gy + oy
+        left: targetRect.left - (w - gx) + ox,
+        right: targetRect.right + gx + ox,
+        top: targetRect.top - (h - gy) + oy,
+        bottom: targetRect.bottom + gy + oy
     };
 }
 
@@ -7754,6 +7755,45 @@ function getImageRect() {
     };
 }
 
+function getImportRotationDeg() {
+    return isImageBasisMode() ? qrRotationDeg : imageRotationDeg;
+}
+
+// Axis-aligned visual bounds of the rotated operation frame, expressed in the
+// canvas-wrapper's content coordinate system.
+function getImportVisualRect(x = importState.x, y = importState.y) {
+    const width = Math.max(0, importState.width || 0);
+    const height = Math.max(0, importState.height || 0);
+    const rad = getRotationRad(getImportRotationDeg());
+    const halfW = width / 2;
+    const halfH = height / 2;
+    const visualHalfW = Math.abs(Math.cos(rad)) * halfW + Math.abs(Math.sin(rad)) * halfH;
+    const visualHalfH = Math.abs(Math.sin(rad)) * halfW + Math.abs(Math.cos(rad)) * halfH;
+    const cx = x + halfW;
+    const cy = y + halfH;
+    return {
+        left: cx - visualHalfW,
+        top: cy - visualHalfH,
+        right: cx + visualHalfW,
+        bottom: cy + visualHalfH
+    };
+}
+
+// In image-basis mode the frame is the QR and must be compared with the whole
+// image canvas. In normal mode the frame is the image and remains bounded by
+// the QR module matrix.
+function getImportMoveBoundaryRect() {
+    return isImageBasisMode() ? getQrRect() : getQrMatrixRect();
+}
+
+function getPointerInCanvasWrapper(e) {
+    const wrapperRect = canvasWrapper.getBoundingClientRect();
+    return {
+        x: e.clientX - wrapperRect.left + canvasWrapper.scrollLeft,
+        y: e.clientY - wrapperRect.top + canvasWrapper.scrollTop
+    };
+}
+
 function getQrGridCanvasSize() {
     const count = generatedQR ? generatedQR.getModuleCount() : 0;
     if (count <= 0) return 0;
@@ -7796,12 +7836,17 @@ function hasOverlap(a, b) {
 }
 
 function clampToKeepCanvasOverlap(nextX, nextY) {
-    const qrRect = getQrMatrixRect();
+    const boundaryRect = getImportMoveBoundaryRect();
+    const visualRect = getImportVisualRect(nextX, nextY);
+    const leftOffset = visualRect.left - nextX;
+    const rightOffset = visualRect.right - nextX;
+    const topOffset = visualRect.top - nextY;
+    const bottomOffset = visualRect.bottom - nextY;
     const minOverlap = 1;
-    const minX = qrRect.left - importState.width + minOverlap;
-    const maxX = qrRect.right - minOverlap;
-    const minY = qrRect.top - importState.height + minOverlap;
-    const maxY = qrRect.bottom - minOverlap;
+    const minX = boundaryRect.left - rightOffset + minOverlap;
+    const maxX = boundaryRect.right - leftOffset - minOverlap;
+    const minY = boundaryRect.top - bottomOffset + minOverlap;
+    const maxY = boundaryRect.bottom - topOffset - minOverlap;
     return {
         x: Math.min(maxX, Math.max(minX, nextX)),
         y: Math.min(maxY, Math.max(minY, nextY))
@@ -7813,10 +7858,10 @@ function updateOutOfBoundsState() {
         clearDeleteZones();
         return false;
     }
-    const imgRect = getImageRect();
-    const qrRect = getQrMatrixRect();
-    const exceed = getExceededSidesByDistance(imgRect, qrRect);
-    const overlap = hasOverlap(imgRect, qrRect);
+    const visualRect = getImportVisualRect();
+    const boundaryRect = getImportMoveBoundaryRect();
+    const exceed = getExceededSidesByDistance(visualRect, boundaryRect);
+    const overlap = hasOverlap(visualRect, boundaryRect);
     importState.outOfBounds = !overlap;
     const isPointerDragging = importState.isDragging || importState.isResizing;
     if (importState.outOfBounds && isPointerDragging) {
@@ -7874,8 +7919,9 @@ function startImportDrag(e) {
         importState.aspect = importState.width / importState.height;
         importState.lastMoveDx = 0;
         importState.lastMoveDy = 0;
-        importState.dragGrabOffsetX = importState.width / 2;
-        importState.dragGrabOffsetY = importState.height / 2;
+        const visualRect = getImportVisualRect();
+        importState.dragGrabOffsetX = (visualRect.right - visualRect.left) / 2;
+        importState.dragGrabOffsetY = (visualRect.bottom - visualRect.top) / 2;
         e.stopPropagation();
         
         // Save history BEFORE modify
@@ -7892,8 +7938,10 @@ function startImportDrag(e) {
     importState.lastY = e.clientY;
     importState.lastMoveDx = 0;
     importState.lastMoveDy = 0;
-    importState.dragGrabOffsetX = e.clientX - importState.x;
-    importState.dragGrabOffsetY = e.clientY - importState.y;
+    const pointer = getPointerInCanvasWrapper(e);
+    const visualRect = getImportVisualRect();
+    importState.dragGrabOffsetX = pointer.x - visualRect.left;
+    importState.dragGrabOffsetY = pointer.y - visualRect.top;
     
     // Save history BEFORE drag starts
     saveHistory();
