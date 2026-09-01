@@ -2054,6 +2054,7 @@ function setQrRotationDeg(value, shouldRender = true) {
     qrRotationDeg = Number.isFinite(v) ? v : 0;
     if (qrRotationRange) qrRotationRange.value = String(normalizeAngleDeg(qrRotationDeg));
     if (qrRotationValue) qrRotationValue.value = String(qrRotationDeg);
+    updateAllLayerOverlays();
     if (shouldRender) {
         invalidateAnimatedArtCache();
         renderQR(false);
@@ -2068,6 +2069,7 @@ function setImageRotationDeg(value, shouldRender = true) {
     if (L) L.imageRotationDeg = imageRotationDeg;
     if (imageRotationRange) imageRotationRange.value = String(normalizeAngleDeg(imageRotationDeg));
     if (imageRotationValue) imageRotationValue.value = String(imageRotationDeg);
+    updateAllLayerOverlays();
     if (shouldRender) {
         invalidateAnimatedArtCache();
         renderQR(false);
@@ -7479,7 +7481,8 @@ function createDefaultImportState() {
         lastMoveDy: 0,
         dragGrabOffsetX: 0,
         dragGrabOffsetY: 0,
-        imageRotationDeg: 0
+        imageRotationDeg: 0,
+        rotationTarget: null
     };
 }
 
@@ -7687,11 +7690,15 @@ function updateAllLayerOverlays() {
             ov.style.top = st.y + 'px';
             ov.style.zIndex = i === activeImageIndex ? '12' : '10';
             ov.classList.toggle('image-basis', basis);
-            // In image-basis mode the image does not rotate (the QR does); the
-            // frame and its resize/rotate handles otherwise follow the rotation.
-            const rot = basis ? 0 : (L.imageRotationDeg || 0);
+            // The frame represents the QR in image-basis mode and the image in
+            // normal mode, so its border and every handle follow that target.
+            const rot = basis ? qrRotationDeg : (L.imageRotationDeg || 0);
             ov.style.transformOrigin = 'center center';
             ov.style.transform = rot ? ('rotate(' + rot + 'deg)') : '';
+            const rotateHandle = ov.querySelector('.image-rotate-handle');
+            if (rotateHandle) {
+                rotateHandle.title = basis ? '拖动旋转二维码' : '拖动旋转图片';
+            }
             if (L.img) L.img.style.display = (basis || embedOn) ? 'none' : 'block';
         } else {
             ov.style.display = 'none';
@@ -7832,15 +7839,16 @@ function clearImportedImage() {
     updateMaskControls();
 }
 
-// Rotation is not supported in image-basis mode (the QR rotates, the image
-// does not), so the handle only acts in non-basis mode.
+// The same handle rotates the QR in image-basis mode and the image otherwise.
 function startImageRotateDrag(e) {
     if (!importState.active) return;
-    if (isImageBasisMode()) return;
     e.preventDefault();
     e.stopPropagation();
     importState.isRotating = true;
-    importState.startRotDeg = imageRotationDeg;
+    importState.rotationTarget = isImageBasisMode() ? 'qr' : 'image';
+    importState.startRotDeg = importState.rotationTarget === 'qr'
+        ? qrRotationDeg
+        : imageRotationDeg;
     const rect = importOverlay.getBoundingClientRect();
     importState.rotStartAngle = Math.atan2(
         e.clientY - (rect.top + rect.height / 2),
@@ -7911,7 +7919,12 @@ function moveImportDrag(e) {
         const cy = rect.top + rect.height / 2;
         const curAngle = Math.atan2(e.clientY - cy, e.clientX - cx);
         const deg = (curAngle - importState.rotStartAngle) * 180 / Math.PI;
-        setImageRotationDeg(normalizeAngleDeg(importState.startRotDeg + deg), false);
+        const nextRotation = normalizeAngleDeg(importState.startRotDeg + deg);
+        if (importState.rotationTarget === 'qr') {
+            setQrRotationDeg(nextRotation, false);
+        } else {
+            setImageRotationDeg(nextRotation, false);
+        }
         invalidateAnimatedArtCache();
         renderQR(false);
         didChange = true;
@@ -8041,6 +8054,7 @@ function endImportDrag() {
     importState.isDragging = false;
     importState.isResizing = false;
     importState.isRotating = false;
+    importState.rotationTarget = null;
     importState.resizeHandle = null;
     importState.lastMoveDx = 0;
     importState.lastMoveDy = 0;
