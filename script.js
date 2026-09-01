@@ -1,4 +1,4 @@
-﻿// Global State
+// Global State
 let userText = document.getElementById('text-input').value;
 let eccLevel = document.getElementById('ecc-level').value;
 let version = parseInt(document.getElementById('version-range').value) || 0;
@@ -518,26 +518,21 @@ function doesFrameTouchEcRegion(imageSource) {
 
     const basisMode = isImageBasisMode();
     const qrSize = pixelMap.length;
-    const totalModulesVisual = qrSize + 2 * qrMargin;
-    let qrStartX = 0;
-    let qrStartY = 0;
-    let moduleW = CELL_SIZE;
-    let moduleH = CELL_SIZE;
+    const expected = getExpectedCanvasSize(qrSize, imageSource);
+    const displayW = Math.max(1, Math.floor(expected.width * zoomLevel));
+    const displayH = Math.max(1, Math.floor(expected.height * zoomLevel));
+    const qrLayout = getQrSamplingLayout(qrSize, expected.width, expected.height, displayW, displayH);
+    const qrStartX = qrLayout.x;
+    const qrStartY = qrLayout.y;
+    const moduleW = qrLayout.moduleW;
+    const moduleH = qrLayout.moduleH;
     let imageBoxX = 0;
     let imageBoxY = 0;
-    let imageBoxW = Math.max(1, canvas.width);
-    let imageBoxH = Math.max(1, canvas.height);
+    let imageBoxW = Math.max(1, expected.width);
+    let imageBoxH = Math.max(1, expected.height);
 
-    if (basisMode) {
-        const basisBox = getBasisQrBoxInternal();
-        qrStartX = basisBox.x;
-        qrStartY = basisBox.y;
-        moduleW = basisBox.width / totalModulesVisual;
-        moduleH = basisBox.height / totalModulesVisual;
-    } else {
-        const displayW = parseFloat(canvas.style.width) || canvas.width;
-        const displayH = parseFloat(canvas.style.height) || canvas.height;
-        const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
+    if (!basisMode) {
+        const box = getOverlayInnerBoxInternal(expected.width, expected.height, displayW, displayH);
         imageBoxX = box.x;
         imageBoxY = box.y;
         imageBoxW = Math.max(1, box.width);
@@ -549,22 +544,27 @@ function doesFrameTouchEcRegion(imageSource) {
             const cell = pixelMap[r][c];
             if (!cell || cell.type !== 'ec') continue;
 
-            const cx = qrStartX + (c + qrMargin) * moduleW + (moduleW / 2);
-            const cy = qrStartY + (r + qrMargin) * moduleH + (moduleH / 2);
-
-            const mapped = getSampledImageCoords(
-                cx,
-                cy,
-                { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+            const moduleX = qrStartX + (c + qrMargin) * moduleW;
+            const moduleY = qrStartY + (r + qrMargin) * moduleH;
+            const sampled = sampleModuleImageRegion(
+                imgData.data,
                 sourceW,
-                sourceH
+                sourceH,
+                moduleX,
+                moduleY,
+                moduleW,
+                moduleH,
+                (px, py) => getSampledImageCoords(
+                    px,
+                    py,
+                    { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                    sourceW,
+                    sourceH,
+                    undefined,
+                    { x: qrStartX, y: qrStartY, width: qrLayout.width, height: qrLayout.height }
+                )
             );
-            const localX = Math.floor(mapped.lx);
-            const localY = Math.floor(mapped.ly);
-            if (localX < 0 || localY < 0 || localX >= sourceW || localY >= sourceH) continue;
-
-            const idx = (localY * sourceW + localX) * 4;
-            if (imgData.data[idx + 3] > 10) {
+            if (sampled.covered) {
                 return true;
             }
         }
@@ -1867,18 +1867,21 @@ function getOverlayInnerBoxInternal(canvasW, canvasH, displayW, displayH, stateO
     };
 }
 
-function getBasisQrBoxInternal() {
+function getBasisQrBoxInternal(
+    canvasW = canvas.width,
+    canvasH = canvas.height,
+    displayW = parseFloat(canvas.style.width) || canvasW,
+    displayH = parseFloat(canvas.style.height) || canvasH
+) {
     if (!importState.active || importState.width <= 0 || importState.height <= 0) {
         return {
             x: 0,
             y: 0,
-            width: Math.max(1, canvas.width),
-            height: Math.max(1, canvas.height)
+            width: Math.max(1, canvasW),
+            height: Math.max(1, canvasH)
         };
     }
-    const displayW = parseFloat(canvas.style.width) || canvas.width;
-    const displayH = parseFloat(canvas.style.height) || canvas.height;
-    const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
+    const box = getOverlayInnerBoxInternal(canvasW, canvasH, displayW, displayH);
     return {
         x: box.x,
         y: box.y,
@@ -1903,11 +1906,11 @@ function getRotationRad(deg) {
 //    the point around the QR box center (image fills the canvas, 1:1 mapping).
 //  - normal mode: the image rotates around its box center, so apply the inverse
 //    image rotation.
-function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH, rotDegOverride) {
+function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH, rotDegOverride, basisQrBoxOverride) {
     if (isImageBasisMode()) {
         const rad = getRotationRad(qrRotationDeg);
         if (rad === 0) return { lx: cx, ly: cy };
-        const box = getBasisQrBoxInternal();
+        const box = basisQrBoxOverride || getBasisQrBoxInternal();
         const qcx = box.x + box.width / 2;
         const qcy = box.y + box.height / 2;
         const cos = Math.cos(rad);
@@ -1921,6 +1924,52 @@ function getSampledImageCoords(cx, cy, imageBox, sourceW, sourceH, rotDegOverrid
     return getRotatedImageLocalCoords(cx, cy, imageBox, rotDeg, sourceW, sourceH);
 }
 
+// Sample the whole module footprint, not only its center. A module is covered
+// when at least one sampled output pixel maps to a non-transparent image pixel;
+// its target tone is based on the average luminance of all covered samples.
+function sampleModuleImageRegion(imageData, imageW, imageH, x, y, w, h, mapPoint) {
+    if (!imageData || imageW <= 0 || imageH <= 0 || w <= 0 || h <= 0) {
+        return { covered: false, coverage: 0, luminance: 127.5 };
+    }
+
+    // At least four samples per axis catches partial edge intersections for
+    // sub-pixel/small modules; larger modules are sampled at output-pixel density.
+    const sampleCols = Math.min(32, Math.max(4, Math.ceil(w)));
+    const sampleRows = Math.min(32, Math.max(4, Math.ceil(h)));
+    const bg = parseHexColor(backgroundColor || '#ffffff');
+    let covered = 0;
+    let luminanceSum = 0;
+
+    for (let sy = 0; sy < sampleRows; sy++) {
+        const py = y + ((sy + 0.5) * h / sampleRows);
+        for (let sx = 0; sx < sampleCols; sx++) {
+            const px = x + ((sx + 0.5) * w / sampleCols);
+            const mapped = mapPoint ? mapPoint(px, py) : { lx: px, ly: py };
+            const ix = Math.floor(mapped.lx);
+            const iy = Math.floor(mapped.ly);
+            if (ix < 0 || iy < 0 || ix >= imageW || iy >= imageH) continue;
+
+            const idx = (iy * imageW + ix) * 4;
+            const alphaByte = imageData[idx + 3];
+            if (alphaByte <= 10) continue;
+
+            const alpha = alphaByte / 255;
+            const rr = imageData[idx] * alpha + bg.r * (1 - alpha);
+            const gg = imageData[idx + 1] * alpha + bg.g * (1 - alpha);
+            const bb = imageData[idx + 2] * alpha + bg.b * (1 - alpha);
+            luminanceSum += 0.299 * rr + 0.587 * gg + 0.114 * bb;
+            covered += 1;
+        }
+    }
+
+    const total = sampleCols * sampleRows;
+    return {
+        covered: covered > 0,
+        coverage: total > 0 ? covered / total : 0,
+        luminance: covered > 0 ? luminanceSum / covered : 127.5
+    };
+}
+
 // Composite every layer (bottom-to-top) into a single canvas so the QR can
 // follow the topmost layer's pixels in overlap areas. Each layer is drawn at
 // its own overlay box with its own rotation (image-basis mode keeps images
@@ -1932,8 +1981,13 @@ function buildCompositeCanvas(canvasW, canvasH, frameOverride) {
     c.height = Math.max(1, Math.round(canvasH));
     const cc = c.getContext('2d', { willReadFrequently: true });
     cc.clearRect(0, 0, c.width, c.height);
-    const displayW = parseFloat(canvas.style.width) || c.width;
-    const displayH = parseFloat(canvas.style.height) || c.height;
+    const isCurrentCanvasSize = c.width === canvas.width && c.height === canvas.height;
+    const displayW = isCurrentCanvasSize
+        ? (parseFloat(canvas.style.width) || c.width)
+        : Math.max(1, Math.floor(c.width * zoomLevel));
+    const displayH = isCurrentCanvasSize
+        ? (parseFloat(canvas.style.height) || c.height)
+        : Math.max(1, Math.floor(c.height * zoomLevel));
     const basisMode = isImageBasisMode();
     for (let i = 0; i < imageLayers.length; i++) {
         const L = imageLayers[i];
@@ -1943,7 +1997,12 @@ function buildCompositeCanvas(canvasW, canvasH, frameOverride) {
         if (!src) continue;
         const dim = getSourceDimensions(src);
         if (dim.width <= 0 || dim.height <= 0) continue;
-        const box = getOverlayInnerBoxInternal(c.width, c.height, displayW, displayH, st, L.overlayEl);
+        // In image-basis mode the overlay box controls the QR, while every
+        // image layer belongs to the fixed image canvas. In normal mode the
+        // overlay box controls the image itself.
+        const box = basisMode
+            ? { x: 0, y: 0, width: c.width, height: c.height }
+            : getOverlayInnerBoxInternal(c.width, c.height, displayW, displayH, st, L.overlayEl);
         if (box.width <= 0 || box.height <= 0) continue;
         const rot = basisMode ? 0 : (L.imageRotationDeg || 0);
         drawRotatedImageBox(cc, box.x, box.y, box.width, box.height, rot, () => {
@@ -2233,14 +2292,21 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
     bindScaleControl(coveredModuleScaleRange, coveredModuleScaleValue, setCoveredModuleScalePercent);
 
     const bindRotationControl = (range, numberInput, setter) => {
-        const commit = () => {
+        const commit = async (recomputeToneMapping = false) => {
             invalidateAnimatedArtCache();
             renderQR(false);
+            if (recomputeToneMapping && hasImageUpload && importState.active) {
+                await applyImport(false, previewImg, true);
+            }
         };
         if (range) {
             range.addEventListener('input', () => {
                 setter(range.value, false);
                 commit();
+            });
+            range.addEventListener('change', async () => {
+                setter(range.value, false);
+                await commit(true);
             });
         }
         if (numberInput) {
@@ -2249,29 +2315,32 @@ bindScaleControl(moduleScaleRange, moduleScaleValue, setModuleScalePercent);
                 setter(numberInput.value, false);
                 commit();
             });
-            numberInput.addEventListener('change', () => {
+            numberInput.addEventListener('change', async () => {
                 setter(numberInput.value === '' ? (range ? range.value : 0) : numberInput.value, false);
-                commit();
+                await commit(true);
             });
         }
     };
     bindRotationControl(qrRotationRange, qrRotationValue, setQrRotationDeg);
     bindRotationControl(imageRotationRange, imageRotationValue, setImageRotationDeg);
 
-    const setOuterMargin = (value) => {
+    const setOuterMargin = async (value, recomputeToneMapping = false) => {
         const v = Math.max(0, Math.round(Number(value) || 0));
         outerMarginPx = Number.isFinite(v) ? v : 0;
         if (outerMarginValue) outerMarginValue.value = String(outerMarginPx);
         invalidateAnimatedArtCache();
         renderQR(false);
+        if (recomputeToneMapping && hasImageUpload && importState.active) {
+            await applyImport(false, previewImg, true);
+        }
     };
     if (outerMarginValue) {
-        outerMarginValue.addEventListener('input', () => {
+        outerMarginValue.addEventListener('input', async () => {
             if (outerMarginValue.value === '') return;
-            setOuterMargin(outerMarginValue.value);
+            await setOuterMargin(outerMarginValue.value, true);
         });
-        outerMarginValue.addEventListener('change', () => {
-            setOuterMargin(outerMarginValue.value === '' ? 0 : outerMarginValue.value);
+        outerMarginValue.addEventListener('change', async () => {
+            await setOuterMargin(outerMarginValue.value === '' ? 0 : outerMarginValue.value, true);
         });
     }
 
@@ -2990,6 +3059,45 @@ function parseHexColor(hex) {
 function rgbaFromHex(hex, alpha) {
     const { r, g, b } = parseHexColor(hex);
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getExpectedCanvasSize(moduleCount, imageSource = previewImg) {
+    const baseSize = (moduleCount + 2 * qrMargin) * CELL_SIZE;
+    const src = getSourceDimensions(imageSource);
+    if (isImageBasisMode() && src.width > 0 && src.height > 0) {
+        return {
+            width: Math.max(1, Math.round(basisImageWidth || src.width)),
+            height: Math.max(1, Math.round(basisImageHeight || src.height))
+        };
+    }
+    return {
+        width: Math.max(1, Math.round(baseSize + 2 * outerMarginPx)),
+        height: Math.max(1, Math.round(baseSize + 2 * outerMarginPx))
+    };
+}
+
+function getQrSamplingLayout(moduleCount, canvasW, canvasH, displayW, displayH) {
+    const totalModules = moduleCount + 2 * qrMargin;
+    if (isImageBasisMode()) {
+        const box = getBasisQrBoxInternal(canvasW, canvasH, displayW, displayH);
+        return {
+            x: box.x,
+            y: box.y,
+            width: box.width,
+            height: box.height,
+            moduleW: box.width / totalModules,
+            moduleH: box.height / totalModules
+        };
+    }
+    const size = totalModules * CELL_SIZE;
+    return {
+        x: outerMarginPx,
+        y: outerMarginPx,
+        width: size,
+        height: size,
+        moduleW: CELL_SIZE,
+        moduleH: CELL_SIZE
+    };
 }
 
 function clamp01(value) {
@@ -3999,7 +4107,7 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     }
 
     const basisMode = isImageBasisMode();
-    const totalModules = generatedQR.getModuleCount() + 2 * qrMargin;
+    const moduleCount = generatedQR.getModuleCount();
     let qrStartX = 0;
     let qrStartY = 0;
     let moduleW = CELL_SIZE;
@@ -4009,12 +4117,11 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     let imageBoxW = Math.max(1, basisImageWidth || canvas.width || src.width);
     let imageBoxH = Math.max(1, basisImageHeight || canvas.height || src.height);
 
-    const evalCanvasW = basisMode
-        ? Math.max(1, Math.round(basisImageWidth || src.width))
-        : (generatedQR.getModuleCount() + 2 * qrMargin) * CELL_SIZE;
-    const evalCanvasH = basisMode
-        ? Math.max(1, Math.round(basisImageHeight || src.height))
-        : evalCanvasW;
+    const expectedCanvas = getExpectedCanvasSize(moduleCount, sourceImage);
+    const evalCanvasW = expectedCanvas.width;
+    const evalCanvasH = expectedCanvas.height;
+    const evalDisplayW = Math.max(1, Math.floor(evalCanvasW * zoomLevel));
+    const evalDisplayH = Math.max(1, Math.floor(evalCanvasH * zoomLevel));
 
     // With multiple layers (no per-frame override), composite all layers into
     // the evaluation canvas so targets follow the topmost layer's pixels.
@@ -4023,12 +4130,19 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
         ? buildCompositeCanvas(evalCanvasW, evalCanvasH)
         : sourceImage;
 
+    const qrLayout = getQrSamplingLayout(
+        moduleCount,
+        evalCanvasW,
+        evalCanvasH,
+        evalDisplayW,
+        evalDisplayH
+    );
+    qrStartX = qrLayout.x;
+    qrStartY = qrLayout.y;
+    moduleW = qrLayout.moduleW;
+    moduleH = qrLayout.moduleH;
+
     if (basisMode) {
-        const basisBox = getBasisQrBoxInternal();
-        qrStartX = basisBox.x;
-        qrStartY = basisBox.y;
-        moduleW = basisBox.width / totalModules;
-        moduleH = basisBox.height / totalModules;
         imageBoxX = 0;
         imageBoxY = 0;
         imageBoxW = evalCanvasW;
@@ -4038,10 +4152,8 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
         imageBoxY = 0;
         imageBoxW = evalCanvasW;
         imageBoxH = evalCanvasH;
-} else {
-        const displayW = parseFloat(canvas.style.width) || canvas.width;
-        const displayH = parseFloat(canvas.style.height) || canvas.height;
-        const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
+    } else {
+        const box = getOverlayInnerBoxInternal(evalCanvasW, evalCanvasH, evalDisplayW, evalDisplayH);
         imageBoxX = box.x;
         imageBoxY = box.y;
         imageBoxW = Math.max(1, box.width);
@@ -4057,32 +4169,27 @@ async function optimizeSuffixForArtisticMode(typeNumber, evalMask, hasSeparator,
     const imgData = tCtx.getImageData(0, 0, solveDim.width, solveDim.height).data;
 
     const targetAt = (r, c) => {
-        const cx = qrStartX + (c + qrMargin) * moduleW + moduleW / 2;
-        const cy = qrStartY + (r + qrMargin) * moduleH + moduleH / 2;
-        const mapped = getSampledImageCoords(
-            cx,
-            cy,
-            { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+        const moduleX = qrStartX + (c + qrMargin) * moduleW;
+        const moduleY = qrStartY + (r + qrMargin) * moduleH;
+        const sampled = sampleModuleImageRegion(
+            imgData,
             solveDim.width,
             solveDim.height,
-            composited ? 0 : undefined
+            moduleX,
+            moduleY,
+            moduleW,
+            moduleH,
+            (px, py) => getSampledImageCoords(
+                px,
+                py,
+                { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                solveDim.width,
+                solveDim.height,
+                composited ? 0 : undefined,
+                { x: qrStartX, y: qrStartY, width: qrLayout.width, height: qrLayout.height }
+            )
         );
-        const localX = Math.floor(mapped.lx);
-        const localY = Math.floor(mapped.ly);
-        if (localX < 0 || localX >= solveDim.width || localY < 0 || localY >= solveDim.height) return null;
-        const idx = (localY * solveDim.width + localX) * 4;
-        const rr = imgData[idx];
-        const gg = imgData[idx + 1];
-        const bb = imgData[idx + 2];
-        const aa = imgData[idx + 3];
-        if (aa < 10) return null;
-        const a = aa / 255;
-        const bg = parseHexColor(backgroundColor || '#ffffff');
-        const rB = rr * a + bg.r * (1 - a);
-        const gB = gg * a + bg.g * (1 - a);
-        const bB = bb * a + bg.b * (1 - a);
-        const lum = 0.299 * rB + 0.587 * gB + 0.114 * bB;
-        return getTargetColorFromLuminance(lum);
+        return sampled.covered ? getTargetColorFromLuminance(sampled.luminance) : null;
     };
 
     const fillDirection = (fillDirectionSelect && fillDirectionSelect.value)
@@ -4826,7 +4933,6 @@ function fitToScreen() {
 }
 function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
     if (!pixelMap) return;
-    const basisMode = isImageBasisMode();
     let checkCoverage = false;
     let imgData = null;
     let sourceW = 0;
@@ -4842,8 +4948,12 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
     let imageBoxH = 1;
 
     if (previewImg.src && importState.width > 0) {
-        composited = imageLayers.length > 0 && canvas.width > 0 && canvas.height > 0;
-        const useSource = composited ? buildCompositeCanvas(canvas.width, canvas.height) : previewImg;
+        const count = generatedQR ? generatedQR.getModuleCount() : pixelMap.length;
+        const expected = getExpectedCanvasSize(count, previewImg);
+        const displayW = Math.max(1, Math.floor(expected.width * zoomLevel));
+        const displayH = Math.max(1, Math.floor(expected.height * zoomLevel));
+        composited = imageLayers.length > 0;
+        const useSource = composited ? buildCompositeCanvas(expected.width, expected.height) : previewImg;
         const src = getSourceDimensions(useSource);
         sourceW = src.width;
         sourceH = src.height;
@@ -4857,35 +4967,18 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                 tempCtx.drawImage(useSource, 0, 0, sourceW, sourceH);
                 imgData = tempCtx.getImageData(0, 0, sourceW, sourceH);
 
-                const count = generatedQR ? generatedQR.getModuleCount() : pixelMap.length;
-                const totalModules = count + 2 * qrMargin;
-                if (basisMode) {
-                    const basisBox = getBasisQrBoxInternal();
-                    qrStartX = basisBox.x;
-                    qrStartY = basisBox.y;
-                    moduleW = basisBox.width / totalModules;
-                    moduleH = basisBox.height / totalModules;
+                const layout = getQrSamplingLayout(count, expected.width, expected.height, displayW, displayH);
+                qrStartX = layout.x;
+                qrStartY = layout.y;
+                moduleW = layout.moduleW;
+                moduleH = layout.moduleH;
+                if (composited) {
                     imageBoxX = 0;
                     imageBoxY = 0;
-                    imageBoxW = canvas.width;
-                    imageBoxH = canvas.height;
-                } else if (composited) {
-                    qrStartX = 0;
-                    qrStartY = 0;
-                    moduleW = CELL_SIZE;
-                    moduleH = CELL_SIZE;
-                    imageBoxX = 0;
-                    imageBoxY = 0;
-                    imageBoxW = canvas.width;
-                    imageBoxH = canvas.height;
+                    imageBoxW = expected.width;
+                    imageBoxH = expected.height;
                 } else {
-                    const displayW = parseFloat(canvas.style.width) || canvas.width;
-                    const displayH = parseFloat(canvas.style.height) || canvas.height;
-                    const box = getOverlayInnerBoxInternal(canvas.width, canvas.height, displayW, displayH);
-                    qrStartX = 0;
-                    qrStartY = 0;
-                    moduleW = CELL_SIZE;
-                    moduleH = CELL_SIZE;
+                    const box = getOverlayInnerBoxInternal(expected.width, expected.height, displayW, displayH);
                     imageBoxX = box.x;
                     imageBoxY = box.y;
                     imageBoxW = Math.max(1, box.width);
@@ -4908,37 +5001,33 @@ function setSuffixUniform(targetColor) { // targetColor: 0=White, 1=Black
                  let needsChange = true;
 
                  if (checkCoverage && imgData) {
-                     const modCX = qrStartX + (c + qrMargin) * moduleW + moduleW / 2;
-                     const modCY = qrStartY + (r + qrMargin) * moduleH + moduleH / 2;
-                     const mapped = getSampledImageCoords(
-                         modCX,
-                         modCY,
-                         { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                     const modX = qrStartX + (c + qrMargin) * moduleW;
+                     const modY = qrStartY + (r + qrMargin) * moduleH;
+                     const sampled = sampleModuleImageRegion(
+                         imgData.data,
                          sourceW,
                          sourceH,
-                         composited ? 0 : undefined
-                     );
-                     const ix = Math.floor(mapped.lx);
-                     const iy = Math.floor(mapped.ly);
-
-                     if (ix >= 0 && iy >= 0 && ix < imgData.width && iy < imgData.height) {
-                             const idx = (iy * imgData.width + ix) * 4;
-                             const rVal = imgData.data[idx];
-                             const gVal = imgData.data[idx+1];
-                             const bVal = imgData.data[idx+2];
-                             const aVal = imgData.data[idx+3];
-                             if (aVal < 10) {
-                                 effectiveTarget = targetColor;
-                             } else {
-                             
-                                 const bgVal = (targetColor === 0) ? 255 : 0; // targetColor 0=White, 1=Black.
-                                 const fA = aVal / 255.0;
-                                 const blendR = rVal * fA + bgVal * (1 - fA);
-                                 const blendG = gVal * fA + bgVal * (1 - fA);
-                                 const blendB = bVal * fA + bgVal * (1 - fA);
-                                 const luma = 0.299 * blendR + 0.587 * blendG + 0.114 * blendB;
-                                 effectiveTarget = getTargetColorFromLuminance(luma);
+                         modX,
+                         modY,
+                         moduleW,
+                         moduleH,
+                         (px, py) => getSampledImageCoords(
+                             px,
+                             py,
+                             { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                             sourceW,
+                             sourceH,
+                             composited ? 0 : undefined,
+                             {
+                                 x: qrStartX,
+                                 y: qrStartY,
+                                 width: (len + 2 * qrMargin) * moduleW,
+                                 height: (len + 2 * qrMargin) * moduleH
                              }
+                         )
+                     );
+                     if (sampled.covered) {
+                         effectiveTarget = getTargetColorFromLuminance(sampled.luminance);
                      }
                  }
             
@@ -5508,7 +5597,7 @@ function renderQR(isExport, imageOverride, forceCompositeSource) {
                 // rotation); draw it 1:1 so offData/bgData reflect the topmost
                 // layer's pixels at each module.
                 offCtx.drawImage(compositeSource, 0, 0);
-                const shouldDrawBg = basisMode || embedImage;
+                const shouldDrawBg = embedImage;
                 if (shouldDrawBg) {
                     ctx.drawImage(compositeSource, 0, 0);
                 }
@@ -5533,7 +5622,7 @@ function renderQR(isExport, imageOverride, forceCompositeSource) {
                     offCtx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
                 });
 
-                const shouldDrawBg = basisMode || embedImage;
+                const shouldDrawBg = embedImage;
                 if (shouldDrawBg) {
                     drawRotatedImageBox(ctx, imgDrawX, imgDrawY, imgDrawW, imgDrawH, imageRotDeg, () => {
                         ctx.drawImage(imageSource, imgDrawX, imgDrawY, imgDrawW, imgDrawH);
@@ -5572,65 +5661,30 @@ function renderQR(isExport, imageOverride, forceCompositeSource) {
         if (!offData || w <= 0 || h <= 0) {
             return { coverage: 0, lum: 0.5, transparent: true };
         }
-        const x0 = Math.max(0, Math.floor(x));
-        const y0 = Math.max(0, Math.floor(y));
-        const x1 = Math.min(canvas.width - 1, Math.ceil(x + w) - 1);
-        const y1 = Math.min(canvas.height - 1, Math.ceil(y + h) - 1);
-        if (x1 < x0 || y1 < y0) {
-            return { coverage: 0, lum: 0.5, transparent: true };
-        }
-
-const sampleCols = 8;
-        const sampleRows = 8;
-        let total = 0;
-        let opaque = 0;
-        let lumSum = 0;
-
-        // In image-basis mode the QR rotates on top of the unrotated image,
-        // so sample the image pixels covered by the rotated module.
         const qrRotSampling = basisMode ? getRotationRad(qrRotationDeg) : 0;
         const qcX = qrOriginX + qrW / 2;
         const qcY = qrOriginY + qrH / 2;
         const rotCos = Math.cos(qrRotSampling);
         const rotSin = Math.sin(qrRotSampling);
-
-        for (let sy = 0; sy < sampleRows; sy++) {
-            const py = Math.min(y1, Math.max(y0, Math.round(y0 + ((sy + 0.5) * (y1 - y0 + 1) / sampleRows) - 0.5)));
-            for (let sx = 0; sx < sampleCols; sx++) {
-                const px0 = Math.min(x1, Math.max(x0, Math.round(x0 + ((sx + 0.5) * (x1 - x0 + 1) / sampleCols) - 0.5)));
-                let px = px0;
-                let ry = py;
-                if (qrRotSampling !== 0) {
-                    const dx = rotCos * (px0 - qcX) - rotSin * (py - qcY);
-                    const dy = rotSin * (px0 - qcX) + rotCos * (py - qcY);
-                    px = qcX + dx;
-                    ry = qcY + dy;
-                }
-                // Rotated sample positions are fractional; round to the nearest
-                // pixel so the array lookup reads a valid color channel.
-                px = Math.round(px);
-                ry = Math.round(ry);
-                if (px < 0 || ry < 0 || px >= canvas.width || ry >= canvas.height) {
-                    total += 1;
-                    continue;
-                }
-                const idx = (ry * canvas.width + px) * 4;
-                total += 1;
-                const alpha = offData[idx + 3];
-                if (alpha > 10) {
-                    opaque += 1;
-                    const rendered = bgData ? bgData.data : offData;
-                    const rr = rendered[idx];
-                    const gg = rendered[idx + 1];
-                    const bb = rendered[idx + 2];
-                    lumSum += (0.299 * rr + 0.587 * gg + 0.114 * bb) / 255.0;
-                }
+        const sampled = sampleModuleImageRegion(
+            offData,
+            canvas.width,
+            canvas.height,
+            x,
+            y,
+            w,
+            h,
+            qrRotSampling === 0 ? null : (px, py) => {
+                const dx = rotCos * (px - qcX) - rotSin * (py - qcY);
+                const dy = rotSin * (px - qcX) + rotCos * (py - qcY);
+                return { lx: qcX + dx, ly: qcY + dy };
             }
-        }
-
-        const coverage = total > 0 ? (opaque / total) : 0;
-        const lum = opaque > 0 ? (lumSum / opaque) : 0.5;
-        return { coverage, lum, transparent: opaque === 0 };
+        );
+        return {
+            coverage: sampled.coverage,
+            lum: sampled.luminance / 255,
+            transparent: !sampled.covered
+        };
     };
 
     const getModulePaint = (isDark, baseLuminance = 0.5, allowAutomatic = false) => {
@@ -8103,8 +8157,8 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
     }
 
     // Non-basis mode: a positive outer margin insets the QR grid inside the
-    // canvas, so sample module centers from the same inset as the rendered
-    // modules (otherwise the image coverage is offset by the margin).
+    // canvas, so sample every module footprint from the same inset as the
+    // rendered modules (otherwise image coverage is offset by the margin).
     if (!basisMode && outerMarginPx > 0) {
         qrStartX = outerMarginPx;
         qrStartY = outerMarginPx;
@@ -8117,43 +8171,34 @@ async function applyImport(doSave = true, imageSource = previewImg, forceRecalc 
             const cell = pixelMap[r][c];
             // Only affect Valid Free Suffix Data
             if (isEditableDataCell(cell)) {
-                const cx = qrStartX + (c + qrMargin) * moduleW + (moduleW / 2);
-                const cy = qrStartY + (r + qrMargin) * moduleH + (moduleH / 2);
-
-                let localX = -1;
-                let localY = -1;
-
-                const mapped = getSampledImageCoords(
-                    cx,
-                    cy,
-                    { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                const moduleX = qrStartX + (c + qrMargin) * moduleW;
+                const moduleY = qrStartY + (r + qrMargin) * moduleH;
+                const sampled = sampleModuleImageRegion(
+                    imgData.data,
                     sourceW,
                     sourceH,
-                    composited ? 0 : undefined
+                    moduleX,
+                    moduleY,
+                    moduleW,
+                    moduleH,
+                    (px, py) => getSampledImageCoords(
+                        px,
+                        py,
+                        { x: imageBoxX, y: imageBoxY, width: imageBoxW, height: imageBoxH },
+                        sourceW,
+                        sourceH,
+                        composited ? 0 : undefined,
+                        {
+                            x: qrStartX,
+                            y: qrStartY,
+                            width: totalModulesVisual * moduleW,
+                            height: totalModulesVisual * moduleH
+                        }
+                    )
                 );
-                localX = Math.floor(mapped.lx);
-                localY = Math.floor(mapped.ly);
 
-                if (localX >= 0 && localX < sourceW && localY >= 0 && localY < sourceH) {
-                    const idx = (localY * sourceW + localX) * 4;
-                    const rr = imgData.data[idx];
-                    const gg = imgData.data[idx+1];
-                    const bb = imgData.data[idx+2];
-                    const aa = imgData.data[idx+3];
-                    
-                    // Ignore transparent pixels 
-                    if (aa < 10) continue; 
-                    
-                    const aNorm = aa / 255.0;
-                    const bg = parseHexColor(backgroundColor || '#ffffff');
-                    const rB = rr * aNorm + bg.r * (1 - aNorm);
-                    const gB = gg * aNorm + bg.g * (1 - aNorm);
-                    const bB = bb * aNorm + bg.b * (1 - aNorm);
-                    
-                    const lum = (0.299*rB + 0.587*gB + 0.114*bB); // Range 0-255
-                    
-                    const targetColor = getTargetColorFromLuminance(lum);
-
+                if (sampled.covered) {
+                    const targetColor = getTargetColorFromLuminance(sampled.luminance);
                     modifyPixel(r, c, targetColor);
                     changed = true;
                 }
