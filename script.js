@@ -6091,6 +6091,35 @@ function saveHistory() {
     }
 }
 
+function restoreImportStateFromHistory(snapshot) {
+    if (!snapshot) return;
+    const restored = {
+        ...snapshot,
+        isDragging: false,
+        isResizing: false,
+        isRotating: false,
+        rotationTarget: null,
+        resizeHandle: null,
+        outOfBounds: false
+    };
+    const activeLayer = getActiveLayer();
+    if (activeLayer) {
+        // Keep the global aliases and the layer model on the exact same object.
+        // Otherwise updateAllLayerOverlays() reads the stale pre-undo state and
+        // visually cancels every subsequent drag.
+        activeLayer.importState = restored;
+        importState = activeLayer.importState;
+        importOverlay = activeLayer.overlayEl;
+        previewImg = activeLayer.img;
+        uploadInfo = activeLayer.uploadInfo;
+    } else {
+        importState = restored;
+    }
+    updateOverlayTransform();
+    updateOverlayVisibility();
+    updateOutOfBoundsState();
+}
+
 function undo() {
     // Stop any active dragging
     endImportDrag();
@@ -6100,15 +6129,7 @@ function undo() {
         const state = historyStack[historyStep];
         currentSuffixBytes = [...state.bytes];
         if (state.import) {
-            importState = { 
-                ...state.import,
-                isDragging: false,
-                isResizing: false,
-                resizeHandle: null 
-            };
-            // Update Overlay UI
-            updateOverlayTransform();
-            updateOverlayVisibility();
+            restoreImportStateFromHistory(state.import);
         }
         updateQR();
     }
@@ -6123,15 +6144,7 @@ function redo() {
         const state = historyStack[historyStep];
         currentSuffixBytes = [...state.bytes];
         if (state.import) {
-            importState = { 
-                ...state.import,
-                isDragging: false,
-                isResizing: false,
-                resizeHandle: null 
-            };
-            
-            updateOverlayTransform();
-            updateOverlayVisibility();
+            restoreImportStateFromHistory(state.import);
         }
         updateQR();
     }
